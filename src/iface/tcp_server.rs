@@ -1,3 +1,27 @@
+//! TCP server interface for Reticulum.
+//!
+//! This module provides a TCP server interface that listens for incoming
+//! TCP connections and creates TCP clients for each connected peer.
+//!
+//! # Overview
+//!
+//! TcpServer binds to a local address and accepts incoming TCP connections.
+//! For each new connection, it spawns a TcpClient to handle communication
+//! with that peer.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use reticulum::iface::InterfaceManager;
+//! use reticulum::iface::tcp_server::TcpServer;
+//!
+//! let mut manager = InterfaceManager::new(100);
+//! manager.spawn(
+//!     TcpServer::new("0.0.0.0:4242", manager.clone()),
+//!     TcpServer::spawn
+//! );
+//! ```
+
 use alloc::string::String;
 use std::sync::Arc;
 
@@ -8,12 +32,25 @@ use crate::error::RnsError;
 use super::tcp_client::TcpClient;
 use super::{Interface, InterfaceContext, InterfaceManager};
 
+/// A TCP server interface for accepting incoming connections.
+///
+/// TcpServer listens on a local address and spawns TcpClient instances
+/// for each connected peer. This allows Reticulum to accept incoming
+/// TCP connections from remote peers.
 pub struct TcpServer {
+    /// The local address to bind to.
     addr: String,
+    /// Reference to the interface manager for spawning clients.
     iface_manager: Arc<tokio::sync::Mutex<InterfaceManager>>,
 }
 
 impl TcpServer {
+    /// Creates a new TCP server that will listen on the specified address.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The local address to bind to (e.g., "0.0.0.0:4242")
+    /// * `iface_manager` - Reference to the InterfaceManager for spawning client interfaces
     pub fn new<T: Into<String>>(
         addr: T,
         iface_manager: Arc<tokio::sync::Mutex<InterfaceManager>>,
@@ -24,6 +61,12 @@ impl TcpServer {
         }
     }
 
+    /// Spawns the TCP server interface worker task.
+    ///
+    /// This is the main async task that handles:
+    /// - Binding to the local address
+    /// - Accepting incoming TCP connections
+    /// - Spawning TcpClient instances for each connected peer
     pub async fn spawn(context: InterfaceContext<Self>) {
         let addr = { context.inner.lock().unwrap().addr.clone() };
 
@@ -111,6 +154,9 @@ impl TcpServer {
 }
 
 impl Interface for TcpServer {
+    /// Returns the Maximum Transmission Unit (MTU) for this interface.
+    ///
+    /// The TCP server interface supports packets up to 2048 bytes.
     fn mtu() -> usize {
         2048
     }

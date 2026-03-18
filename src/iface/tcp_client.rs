@@ -1,3 +1,27 @@
+//! TCP client interface for Reticulum.
+//!
+//! This module provides a TCP client interface that can connect to TCP servers
+//! and transmit/receive Reticulum packets over the connection.
+//!
+//! # Overview
+//!
+//! TcpClient connects to a remote TCP server and exchanges HDLC-encoded
+//! Reticulum packets. It uses HDLC framing for reliable packet delivery
+//! over TCP.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use reticulum::iface::InterfaceManager;
+//! use reticulum::iface::tcp_client::TcpClient;
+//!
+//! let mut manager = InterfaceManager::new(100);
+//! manager.spawn(
+//!     TcpClient::new("192.168.1.100:4242"),
+//!     TcpClient::spawn
+//! );
+//! ```
+
 use std::sync::Arc;
 
 use tokio::io::AsyncWriteExt;
@@ -20,12 +44,23 @@ use super::{Interface, InterfaceContext};
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
 
+/// A TCP client interface for connecting to remote Reticulum peers.
+///
+/// TcpClient establishes a TCP connection to a remote server and
+/// exchanges Reticulum packets encoded with HDLC framing.
 pub struct TcpClient {
+    /// The remote address to connect to (host:port).
     addr: String,
+    /// Optional pre-connected stream.
     stream: Option<TcpStream>,
 }
 
 impl TcpClient {
+    /// Creates a new TCP client that will connect to the specified address.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address to connect to (e.g., "192.168.1.100:4242")
     pub fn new<T: Into<String>>(addr: T) -> Self {
         Self {
             addr: addr.into(),
@@ -33,6 +68,12 @@ impl TcpClient {
         }
     }
 
+    /// Creates a new TCP client with an existing connection.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address identifier for this connection
+    /// * `stream` - An already-connected TCP stream
     pub fn new_from_stream<T: Into<String>>(addr: T, stream: TcpStream) -> Self {
         Self {
             addr: addr.into(),
@@ -40,6 +81,13 @@ impl TcpClient {
         }
     }
 
+    /// Spawns the TCP client interface worker task.
+    ///
+    /// This is the main async task that handles:
+    /// - Connecting to the remote TCP server
+    /// - Receiving packets from the TCP stream
+    /// - Transmitting packets to the TCP stream
+    /// - Automatic reconnection on disconnect
     pub async fn spawn(context: InterfaceContext<TcpClient>) {
         let iface_stop = context.channel.stop.clone();
         let addr = { context.inner.lock().unwrap().addr.clone() };
@@ -210,6 +258,7 @@ impl TcpClient {
 }
 
 impl Interface for TcpClient {
+    /// Returns the Maximum Transmission Unit (MTU) for this interface.
     fn mtu() -> usize {
         2048
     }

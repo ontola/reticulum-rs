@@ -1,3 +1,22 @@
+//! Cache for tracking seen packets and detecting duplicates.
+//!
+//! This module provides the PacketCache which tracks packets that have been
+//! seen to prevent processing duplicates. It stores packet hashes along with
+//! timestamps and hop counts.
+//!
+//! # Overview
+//!
+//! PacketCache is used by the Transport to:
+//! - Track recently seen packets by their hash
+//! - Detect and filter duplicate packets
+//! - Track minimum hop counts for packets
+//! - Clean up old entries after a configurable duration
+//!
+//! # Usage
+//!
+//! This is used internally by the Transport to prevent processing
+//! the same packet multiple times.
+
 use std::{
     cmp::min,
     collections::HashMap,

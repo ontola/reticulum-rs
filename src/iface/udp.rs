@@ -1,3 +1,27 @@
+//! UDP interface for Reticulum.
+//!
+//! This module provides a UDP interface for transmitting and receiving
+//! Reticulum packets over UDP datagrams.
+//!
+//! # Overview
+//!
+//! UdpInterface binds to a local address and can optionally forward packets
+//! to a remote address. Unlike TCP, UDP is connectionless and each packet
+//! is sent as an independent datagram.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use reticulum::iface::InterfaceManager;
+//! use reticulum::iface::udp::UdpInterface;
+//!
+//! let mut manager = InterfaceManager::new(100);
+//! manager.spawn(
+//!     UdpInterface::new("0.0.0.0:4242", Some("192.168.1.100:4242")),
+//!     UdpInterface::spawn
+//! );
+//! ```
+
 use std::sync::Arc;
 
 use tokio::net::UdpSocket;
@@ -14,22 +38,39 @@ use super::{Interface, InterfaceContext};
 // TODO: Configure via features
 const PACKET_TRACE: bool = true;
 
+/// A UDP interface for Reticulum networking.
+///
+/// UdpInterface provides UDP-based packet transmission and reception.
+/// It can bind to a local address and optionally forward packets
+/// to a remote UDP address.
 pub struct UdpInterface {
+    /// The local address to bind to.
     bind_addr: String,
-    forward_addr: Option<String>
+    /// Optional remote address to forward packets to.
+    forward_addr: Option<String>,
 }
 
 impl UdpInterface {
-    pub fn new<T: Into<String>>(
-        bind_addr: T,
-        forward_addr: Option<T>
-    ) -> Self {
+    /// Creates a new UDP interface.
+    ///
+    /// # Arguments
+    ///
+    /// * `bind_addr` - The local address to bind to (e.g., "0.0.0.0:4242")
+    /// * `forward_addr` - Optional remote address to forward packets to
+    pub fn new<T: Into<String>>(bind_addr: T, forward_addr: Option<T>) -> Self {
         Self {
             bind_addr: bind_addr.into(),
             forward_addr: forward_addr.map(Into::into),
         }
     }
 
+    /// Spawns the UDP interface worker task.
+    ///
+    /// This is the main async task that handles:
+    /// - Binding to the local UDP socket
+    /// - Receiving packets from the socket
+    /// - Optionally forwarding packets to a remote address
+    /// - Automatic reconnection on socket errors
     pub async fn spawn(context: InterfaceContext<Self>) {
         let bind_addr = { context.inner.lock().unwrap().bind_addr.clone() };
         let forward_addr = { context.inner.lock().unwrap().forward_addr.clone() };
@@ -159,6 +200,9 @@ impl UdpInterface {
 }
 
 impl Interface for UdpInterface {
+    /// Returns the Maximum Transmission Unit (MTU) for this interface.
+    ///
+    /// The UDP interface supports packets up to 2048 bytes.
     fn mtu() -> usize {
         2048
     }

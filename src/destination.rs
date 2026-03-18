@@ -1,3 +1,32 @@
+//! Destination types for Reticulum networking.
+//!
+//! This module provides types for representing endpoints in a Reticulum Network.
+//! Destinations are used as targets for sending packets, establishing links,
+//! and receiving data in Reticulum.
+//!
+//! # Overview
+//!
+//! A [`Destination`] represents an endpoint in the Reticulum network. It combines:
+//! - An [`Identity`][crate::identity::Identity] for cryptographic operations
+//! - A [`DestinationName`] for human-readable addressing
+//! - Direction (input/output) and Type (single/group/plain) for configuration
+//!
+//! # Destination Types
+//!
+//! - **Single**: Point-to-point encrypted destination
+//! - **Group**: Group-based encrypted destination
+//! - **Plain**: Unencrypted destination
+//!
+//! # Directions
+//!
+//! - **Input**: Receiving end (can decrypt incoming data)
+//! - **Output**: Sending end (can encrypt data for destination)
+//!
+//! # Usage
+//!
+//! Destinations are typically created via the [`Transport`][crate::transport::Transport]
+//! and announced to the network using [`announce()`][SingleInputDestination::announce].
+
 pub mod link;
 pub mod link_map;
 
@@ -20,9 +49,23 @@ use sha2::Digest;
 
 //***************************************************************************//
 
+/// Trait for distinguishing input and output directions.
+///
+/// This is a marker trait used as a type-level indicator of whether
+/// a destination is for receiving ([`Input`]) or sending ([`Output`]).
 pub trait Direction {}
 
+/// Input direction - receiving end of communication.
+///
+/// An Input destination can receive and decrypt incoming packets.
+/// It holds a [`PrivateIdentity`][crate::identity::PrivateIdentity] with
+/// both encryption and signing keys.
 pub struct Input;
+
+/// Output direction - sending end of communication.
+///
+/// An Output destination is used to send encrypted packets to a peer.
+/// It holds only a public [`Identity`][crate::identity::Identity].
 pub struct Output;
 
 impl Direction for Input {}
@@ -30,12 +73,48 @@ impl Direction for Output {}
 
 //***************************************************************************//
 
+/// Trait for destination types.
+///
+/// Defines the packet [`DestinationType`][packet::DestinationType] used
+/// by a destination in the Reticulum protocol.
 pub trait Type {
+    /// Returns the packet destination type for this destination type.
     fn destination_type() -> DestinationType;
 }
 
+/// Single destination type.
+///
+/// A Single destination provides point-to-point encrypted communication.
+/// Each single destination has a unique identity and only the holder of
+/// the corresponding private key can decrypt messages sent to it.
+///
+/// # Usage
+///
+/// Single destinations are used for direct, encrypted communication
+/// between two parties.
 pub struct Single;
+
+/// Plain (unencrypted) destination type.
+///
+/// A Plain destination does not provide encryption. Messages sent to
+/// or from a plain destination are transmitted in plaintext.
+///
+/// # Usage
+///
+/// Plain destinations are useful for broadcast applications, testing,
+/// or cases where encryption is handled at a different layer.
 pub struct Plain;
+
+/// Group destination type.
+///
+/// A Group destination allows multiple recipients to decrypt messages
+/// using a shared group key. Any member of the group can decrypt
+/// messages sent to the group destination.
+///
+/// # Usage
+///
+/// Group destinations are useful for group communication where multiple
+/// parties need to receive the same encrypted messages.
 pub struct Group;
 
 impl Type for Single {
@@ -56,17 +135,55 @@ impl Type for Group {
     }
 }
 
+/// Length of the destination name hash in bytes (10 bytes).
+///
+/// The name hash is derived from the app_name and aspects, truncated
+/// to this length for inclusion in announce packets.
 pub const NAME_HASH_LENGTH: usize = 10;
+
+/// Length of the random hash in announce packets (10 bytes).
+///
+/// A random value is included in announce packets to ensure uniqueness
+/// and prevent certain cryptanalytic attacks.
 pub const RAND_HASH_LENGTH: usize = 10;
+
+/// Minimum data length for a valid announce packet.
+///
+/// This is calculated as: public key + verifying key + name hash +
+/// random hash + signature = 32*2 + 10 + 10 + 64 = 148 bytes
 pub const MIN_ANNOUNCE_DATA_LENGTH: usize =
     PUBLIC_KEY_LENGTH * 2 + NAME_HASH_LENGTH + RAND_HASH_LENGTH + SIGNATURE_LENGTH;
 
+/// A destination name derived from app_name and aspects.
+///
+/// Destination names are hashed to create a compact identifier used
+/// in packet addressing. The full name is formed as `{app_name}.{aspects}`.
 #[derive(Copy, Clone)]
 pub struct DestinationName {
+    /// The hash of the destination name.
     pub hash: Hash,
 }
 
 impl DestinationName {
+    /// Creates a new DestinationName from an app name and aspects.
+    ///
+    /// The full name is formed by concatenating `app_name`, a dot, and `aspects`,
+    /// then hashing the result.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_name` - The application name (e.g., "myapp")
+    /// * `aspects` - The aspects/path (e.g., "chat", "status")
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use reticulum::destination::DestinationName;
+    ///
+    /// let name = DestinationName::new("messenger", "chat");
+    /// let hash = name.as_name_hash_slice();
+    /// assert_eq!(hash.len(), 10);
+    /// ```
     pub fn new(app_name: &str, aspects: &str) -> Self {
         let hash = Hash::new(
             Hash::generator()
@@ -80,6 +197,14 @@ impl DestinationName {
         Self { hash }
     }
 
+    /// Creates a DestinationName from an existing name hash slice.
+    ///
+    /// This is useful when reconstructing a destination name from
+    /// announce packet data.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash_slice` - A slice containing the name hash bytes
     pub fn new_from_hash_slice(hash_slice: &[u8]) -> Self {
         let mut hash = [0u8; 32];
         hash[..hash_slice.len()].copy_from_slice(hash_slice);
@@ -89,15 +214,36 @@ impl DestinationName {
         }
     }
 
+    /// Returns the name hash slice (first NAME_HASH_LENGTH bytes).
+    ///
+    /// This is the portion of the hash used in packet addressing.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use reticulum::destination::DestinationName;
+    ///
+    /// let name = DestinationName::new("app", "service");
+    /// let hash_slice = name.as_name_hash_slice();
+    /// assert_eq!(hash_slice.len(), 10);
+    /// ```
     pub fn as_name_hash_slice(&self) -> &[u8] {
         &self.hash.as_slice()[..NAME_HASH_LENGTH]
     }
 }
 
+/// A destination descriptor containing identity and addressing information.
+///
+/// This is the core data structure that identifies a specific destination
+/// in the Reticulum network, combining cryptographic identity with
+/// human-readable naming.
 #[derive(Copy, Clone)]
 pub struct DestinationDesc {
+    /// The cryptographic identity of this destination.
     pub identity: Identity,
+    /// The address hash used in packet routing.
     pub address_hash: AddressHash,
+    /// The destination name (app_name.aspects).
     pub name: DestinationName,
 }
 
@@ -109,9 +255,45 @@ impl fmt::Display for DestinationDesc {
     }
 }
 
+/// A packet containing a destination announcement.
+///
+/// Announce packets are broadcast to the network to notify peers of
+/// a destination's presence and provide necessary keys for encrypted
+/// communication.
 pub type DestinationAnnounce = Packet;
 
 impl DestinationAnnounce {
+    /// Validates an announce packet and extracts the destination information.
+    ///
+    /// This method verifies the signature on the announce packet and
+    /// extracts the announced destination's identity and application data.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` - The packet to validate
+    ///
+    /// # Returns
+    ///
+    /// * `Ok((SingleOutputDestination, app_data))` - On success, returns the
+    ///   destination and any application-specific data
+    /// * `Err(RnsError::PacketError)` - If the packet is not an announce
+    /// * `Err(RnsError::OutOfMemory)` - If packet data is too short
+    /// * `Err(RnsError::CryptoError)` - If signature verification fails
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use reticulum::packet::PacketType;
+    /// # use reticulum::destination::DestinationAnnounce;
+    /// # fn example(packet: &Packet) {
+    /// if packet.header.packet_type == PacketType::Announce {
+    ///     let result = DestinationAnnounce::validate(packet);
+    ///     if let Ok((destination, app_data)) = result {
+    ///         // Use the announced destination
+    ///     }
+    /// }
+    /// # }
+    /// ```
     pub fn validate(packet: &Packet) -> Result<(SingleOutputDestination, &[u8]), RnsError> {
         if packet.header.packet_type != PacketType::Announce {
             return Err(RnsError::PacketError);
@@ -148,6 +330,7 @@ impl DestinationAnnounce {
         offset += RAND_HASH_LENGTH;
         let signature = &announce_data[offset..(offset + SIGNATURE_LENGTH)];
         offset += SIGNATURE_LENGTH;
+
         let app_data = &announce_data[offset..];
 
         let destination = &packet.destination;
@@ -174,14 +357,49 @@ impl DestinationAnnounce {
     }
 }
 
+/// A destination endpoint in the Reticulum network.
+///
+/// Destinations are used as targets for sending packets, establishing links,
+/// and receiving data. The type parameters encode:
+///
+/// - `I`: The identity type ( [`PrivateIdentity`] for input, [`Identity`] for output)
+/// - `D`: The direction ([`Input`] or [`Output`])
+/// - `T`: The destination type ([`Single`], [`Group`], or [`Plain`])
+///
+/// # Type Aliases
+///
+/// For common combinations, use the type aliases:
+/// - [`SingleInputDestination`] - Single destination for receiving
+/// - [`SingleOutputDestination`] - Single destination for sending
+/// - [`PlainInputDestination`] - Plain destination for receiving
+/// - [`PlainOutputDestination`] - Plain destination for sending
+///
+/// # Usage
+///
+/// ```
+/// use reticulum::destination::{DestinationName, SingleInputDestination};
+/// use reticulum::identity::PrivateIdentity;
+/// use rand_core::OsRng;
+///
+/// let identity = PrivateIdentity::new_from_rand(OsRng);
+/// let destination = SingleInputDestination::new(identity, DestinationName::new("app", "service"));
+/// ```
 pub struct Destination<I: HashIdentity, D: Direction, T: Type> {
+    /// The direction (input or output).
     pub direction: PhantomData<D>,
+    /// The destination type (single, group, or plain).
     pub r#type: PhantomData<T>,
+    /// The identity used for cryptographic operations.
     pub identity: I,
+    /// The destination descriptor containing addressing info.
     pub desc: DestinationDesc,
 }
 
 impl<I: HashIdentity, D: Direction, T: Type> Destination<I, D, T> {
+    /// Returns the packet destination type.
+    ///
+    /// This corresponds to the [`packet::DestinationType`] used in
+    /// Reticulum protocol headers.
     pub fn destination_type(&self) -> packet::DestinationType {
         <T as Type>::destination_type()
     }
@@ -214,12 +432,40 @@ impl<I: HashIdentity, D: Direction, T: Type> Destination<I, D, T> {
 //     }
 // }
 
+/// Status returned when handling a packet for a destination.
+///
+/// Indicates what action should be taken after processing an incoming packet.
 pub enum DestinationHandleStatus {
+    /// No action needed for this packet.
     None,
+    /// A link proof is required.
     LinkProof,
 }
 
 impl Destination<PrivateIdentity, Input, Single> {
+    /// Creates a new single-input destination.
+    ///
+    /// A single-input destination can receive encrypted messages and must
+    /// be announced to the network for peers to discover it.
+    ///
+    /// # Arguments
+    ///
+    /// * `identity` - The private identity for this destination
+    /// * `name` - The destination name
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use reticulum::destination::{DestinationName, SingleInputDestination};
+    /// use reticulum::identity::PrivateIdentity;
+    /// use rand_core::OsRng;
+    ///
+    /// let identity = PrivateIdentity::new_from_rand(OsRng);
+    /// let destination = SingleInputDestination::new(
+    ///     identity,
+    ///     DestinationName::new("myapp", "chat")
+    /// );
+    /// ```
     pub fn new(identity: PrivateIdentity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
         let pub_identity = identity.as_identity().clone();
@@ -236,6 +482,38 @@ impl Destination<PrivateIdentity, Input, Single> {
         }
     }
 
+    /// Creates and returns an announce packet for this destination.
+    ///
+    /// The announce packet broadcasts the destination's presence to the
+    /// network and includes all information peers need to establish
+    /// encrypted communication.
+    ///
+    /// # Arguments
+    ///
+    /// * `rng` - Random number generator
+    /// * `app_data` - Optional application-specific data to include
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Packet)` - The announce packet ready to send
+    /// * `Err(RnsError)` - On error
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use reticulum::destination::{DestinationName, SingleInputDestination};
+    /// use reticulum::identity::PrivateIdentity;
+    /// use rand_core::OsRng;
+    ///
+    /// let identity = PrivateIdentity::new_from_rand(OsRng);
+    /// let destination = SingleInputDestination::new(
+    ///     identity,
+    ///     DestinationName::new("app", "service")
+    /// );
+    ///
+    /// let packet = destination.announce(OsRng, None).unwrap();
+    /// // Send packet to network...
+    /// ```
     pub fn announce<R: CryptoRngCore + Copy>(
         &self,
         rng: R,
@@ -292,6 +570,15 @@ impl Destination<PrivateIdentity, Input, Single> {
         })
     }
 
+    /// Creates a path response packet.
+    ///
+    /// Path responses are used in path discovery and allow the destination
+    /// to respond to path requests from peers.
+    ///
+    /// # Arguments
+    ///
+    /// * `rng` - Random number generator
+    /// * `app_data` - Optional application data
     pub fn path_response<R: CryptoRngCore + Copy>(
         &self,
         rng: R,
@@ -303,6 +590,17 @@ impl Destination<PrivateIdentity, Input, Single> {
         Ok(announce)
     }
 
+    /// Handles an incoming packet for this destination.
+    ///
+    /// Examines the packet to determine what action should be taken.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` - The incoming packet
+    ///
+    /// # Returns
+    ///
+    /// The [`DestinationHandleStatus`] indicating what action to take.
     pub fn handle_packet(&mut self, packet: &Packet) -> DestinationHandleStatus {
         if self.desc.address_hash != packet.destination {
             return DestinationHandleStatus::None;
@@ -319,12 +617,24 @@ impl Destination<PrivateIdentity, Input, Single> {
         DestinationHandleStatus::None
     }
 
+    /// Returns a reference to the signing key for this destination.
+    ///
+    /// Used for signing outbound messages and announcements.
     pub fn sign_key(&self) -> &SigningKey {
         self.identity.sign_key()
     }
 }
 
 impl Destination<Identity, Output, Single> {
+    /// Creates a new single-output destination.
+    ///
+    /// An output destination is used to address packets to a peer.
+    /// It holds only the public identity.
+    ///
+    /// # Arguments
+    ///
+    /// * `identity` - The public identity of the destination
+    /// * `name` - The destination name
     pub fn new(identity: Identity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
         Self {
@@ -341,6 +651,15 @@ impl Destination<Identity, Output, Single> {
 }
 
 impl<D: Direction> Destination<EmptyIdentity, D, Plain> {
+    /// Creates a new plain destination (input or output).
+    ///
+    /// Plain destinations transmit data without encryption. The
+    /// direction determines whether it can send or receive.
+    ///
+    /// # Arguments
+    ///
+    /// * `identity` - Empty identity for plain destinations
+    /// * `name` - The destination name
     pub fn new(identity: EmptyIdentity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
         Self {
@@ -356,6 +675,11 @@ impl<D: Direction> Destination<EmptyIdentity, D, Plain> {
     }
 }
 
+/// Creates an address hash from an identity and destination name.
+///
+/// The address hash is used for routing packets in Reticulum.
+/// It is derived by hashing the name hash together with the
+/// identity's address hash.
 fn create_address_hash<I: HashIdentity>(identity: &I, name: &DestinationName) -> AddressHash {
     AddressHash::new_from_hash(&Hash::new(
         Hash::generator()
@@ -366,9 +690,22 @@ fn create_address_hash<I: HashIdentity>(identity: &I, name: &DestinationName) ->
     ))
 }
 
+/// A single-input destination (receiving end, encrypted).
+///
+/// This is the most common type for servers or applications that
+/// need to receive encrypted messages from clients.
 pub type SingleInputDestination = Destination<PrivateIdentity, Input, Single>;
+
+/// A single-output destination (sending end, encrypted).
+///
+/// Used when you want to send encrypted messages to a specific
+/// destination that you know the identity of.
 pub type SingleOutputDestination = Destination<Identity, Output, Single>;
+
+/// A plain-input destination (receiving end, unencrypted).
 pub type PlainInputDestination = Destination<EmptyIdentity, Input, Plain>;
+
+/// A plain-output destination (sending end, unencrypted).
 pub type PlainOutputDestination = Destination<EmptyIdentity, Output, Plain>;
 
 #[cfg(test)]
