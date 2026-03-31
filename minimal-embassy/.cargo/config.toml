@@ -1,12 +1,15 @@
-[target.xtensa-esp32s3-none-elf]
+[target.'cfg(target_arch = "xtensa")']
 runner = "espflash flash --monitor"
 rustflags = [
-    "-C", "link-arg=-Wl,--relax",
+    "-C", "link-arg=-Tlinkall.x",
     "-C", "link-arg=-nostartfiles",
 ]
 
-[unstable]
-build-std = ["core"]
-
 [build]
 target = "xtensa-esp32s3-none-elf"
+
+[toolchain]
+channel = "esp"
+
+[unstable]
+build-std = ["core", "alloc"]
