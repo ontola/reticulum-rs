@@ -1,20 +1,23 @@
 #![no_std]
 #![no_main]
 
+use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal::{main, time::Instant};
+use esp_hal::main;
 use esp_println::println;
+use log::info;
+use reticulum::hash::AddressHash;
 
 #[main]
 fn main() -> ! {
+    esp_alloc::heap_allocator!(size: 32 * 1024);
     let _peripherals = esp_hal::init(esp_hal::Config::default());
+    let _reticulum_compile_probe = AddressHash::new([0u8; 16]);
 
-    // If you see this, the bootloader finally accepted the app!
-    println!("\n\n*******************************");
-    println!("*   LILYGO T-Halow BOOTED!    *");
-    println!("*******************************\n");
+    println!("reticulum embassy bootstrap on esp32s3");
+    info!("embassy bootstrap started");
 
     loop {
-        // Your logic here
+        core::hint::spin_loop();
     }
 }
