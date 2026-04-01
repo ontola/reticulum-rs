@@ -50,6 +50,7 @@ use crate::{
     packet::{
         DestinationType, Header, Packet, PacketContext, PacketDataBuffer, PacketType, PACKET_MDU,
     },
+    transport::engine::{classify_link_data, LinkDataAction},
 };
 
 use super::DestinationDesc;
@@ -391,8 +392,9 @@ impl Link {
             log::warn!("link({}): handling data packet in inactive state", self.id);
         }
 
-        match packet.context {
-            PacketContext::None => {
+        let first_byte = packet.data.as_slice().first().copied();
+        match classify_link_data(packet.context, first_byte) {
+            LinkDataAction::Message => {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     log::trace!("link({}): data {}B", self.id, plain_text.len());
@@ -410,19 +412,17 @@ impl Link {
                     log::error!("link({}): can't decrypt packet", self.id);
                 }
             }
-            PacketContext::KeepAlive => {
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFF {
-                    self.request_time = Instant::now();
-                    log::trace!("link({}): keep-alive request", self.id);
-                    return LinkHandleResult::KeepAlive;
-                }
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFE {
-                    log::trace!("link({}): keep-alive response", self.id);
-                    self.request_time = Instant::now();
-                    return LinkHandleResult::None;
-                }
+            LinkDataAction::KeepAliveRequest => {
+                self.request_time = Instant::now();
+                log::trace!("link({}): keep-alive request", self.id);
+                return LinkHandleResult::KeepAlive;
             }
-            PacketContext::LinkRTT => {
+            LinkDataAction::KeepAliveResponse => {
+                log::trace!("link({}): keep-alive response", self.id);
+                self.request_time = Instant::now();
+                return LinkHandleResult::None;
+            }
+            LinkDataAction::Rtt => {
                 if !out_link {
                     let mut buffer = [0u8; PACKET_MDU];
                     if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
@@ -436,7 +436,7 @@ impl Link {
                     }
                 }
             }
-            PacketContext::LinkClose => {
+            LinkDataAction::Close => {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     match plain_text[..].try_into() {
@@ -458,7 +458,7 @@ impl Link {
                     log::error!("link({}): can't decrypt link close packet", self.id);
                 }
             }
-            _ => {}
+            LinkDataAction::Other => {}
         }
 
         LinkHandleResult::None

@@ -3,6 +3,10 @@ use std::io::Result;
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=proto/");
 
+    if std::env::var_os("CARGO_FEATURE_STD").is_none() {
+        return Ok(());
+    }
+
     // Generate proto files for Kaonic
     tonic_build::configure()
         .type_attribute(

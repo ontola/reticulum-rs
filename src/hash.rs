@@ -34,6 +34,7 @@
 //! ```
 
 use alloc::fmt::Write;
+use alloc::string::String;
 use core::cmp;
 use core::fmt;
 

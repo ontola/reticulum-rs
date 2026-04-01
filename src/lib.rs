@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
 //! A Rust port of the [Reticulum Python reference implementation](https://github.com/markqvist/reticulum),
 //! the cryptography-based networking stack for building unstoppable
 //! networks with LoRa, Packet Radio, WiFi and everything in between.
@@ -145,11 +147,15 @@ pub mod destination;
 pub mod error;
 pub mod hash;
 pub mod identity;
+#[cfg(feature = "std")]
 pub mod iface;
 pub mod packet;
+#[cfg(feature = "std")]
 pub mod transport;
 pub mod serde;
+#[cfg(feature = "std")]
 pub mod my_code;
 
+#[cfg(feature = "std")]
 mod utils;
 

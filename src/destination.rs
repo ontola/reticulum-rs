@@ -27,7 +27,9 @@
 //! Destinations are typically created via the [`Transport`][crate::transport::Transport]
 //! and announced to the network using [`announce()`][SingleInputDestination::announce].
 
+#[cfg(feature = "std")]
 pub mod link;
+#[cfg(feature = "std")]
 pub mod link_map;
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey, SIGNATURE_LENGTH};

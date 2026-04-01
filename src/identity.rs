@@ -45,6 +45,7 @@
 //! ```
 
 use alloc::fmt::Write;
+use alloc::string::String;
 use hkdf::Hkdf;
 use rand_core::CryptoRngCore;
 
