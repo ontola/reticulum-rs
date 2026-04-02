@@ -44,11 +44,9 @@ use crate::iface::TxMessageType;
 use crate::packet::DestinationType;
 use crate::packet::Header;
 use crate::packet::Packet;
-use crate::packet::PacketContext;
 use crate::packet::PacketDataBuffer;
 use crate::packet::PacketType;
 
-use crate::my_code::runtime::Runtime;
 use crate::my_code::runtime::Spawner;
 use crate::my_code::runtime_tokio::TokioRuntime;
 use engine::{
@@ -57,12 +55,15 @@ use engine::{
     DuplicateOutcome, FixedDestinationRoute, InLinkRegistrationAction, IngressAction,
     IngressDecision, IngressReason, IntermediateLinkRequestAction, InLinkMaintenanceAction,
     LinkDestinationDataRoute, LinkRequestRoute, OutLinkMaintenanceAction, PathRequestRoute,
-    ProofForwarding, ProofLinkFollowup, SingleDataRoute, decide_announce_retransmit_action,
+    ProofLinkFollowup, SingleDataRoute, decide_announce_retransmit_action,
     decide_fixed_destination_route, decide_in_link_maintenance_action,
     decide_in_link_registration_action, decide_intermediate_link_request_action,
     decide_link_destination_data_route, decide_link_request_route, decide_out_link_maintenance_action,
-    decide_path_request_route, decide_proof_forwarding, decide_proof_link_followup,
-    decide_single_data_route, should_handle_keepalive_response,
+    decide_path_request_route, decide_proof_link_followup,
+    decide_link_handle_followup, LinkHandleFollowup, decide_proof_handle_followup,
+    ProofHandleFollowup,
+    decide_single_data_route, should_consider_in_link_pending_proof, should_handle_keepalive_response,
+    decide_old_announce_retransmit,
 };
 
 mod announce_limits;
@@ -621,18 +622,20 @@ impl TransportHandler {
     }
 
     async fn filter_duplicate_packets(&self, packet: &Packet) -> DuplicateOutcome {
-        let in_link_pending_proof =
-            if packet.header.packet_type == PacketType::Proof
-                && packet.context == PacketContext::LinkRequestProof
-            {
-                if let Some(link) = self.in_links.get(&packet.destination) {
-                    link.lock().await.status().not_yet_active()
-                } else {
-                    false
-                }
+        let should_consider = should_consider_in_link_pending_proof(
+            packet.header.packet_type,
+            packet.context,
+        );
+
+        let in_link_pending_proof = if should_consider {
+            if let Some(link) = self.in_links.get(&packet.destination) {
+                link.lock().await.status().not_yet_active()
             } else {
                 false
-            };
+            }
+        } else {
+            false
+        };
 
         let allow_duplicate = allow_duplicate_packet(
             packet.header.packet_type,
@@ -681,18 +684,16 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
     }
 
     let maybe_packet = handler.link_table.handle_proof(packet);
-    match decide_proof_forwarding(maybe_packet.is_some()) {
-        ProofForwarding::Forward => {
-            if let Some((packet, iface)) = maybe_packet {
-                handler
-                    .send(TxMessage {
-                        tx_type: TxMessageType::Direct(iface),
-                        packet,
-                    })
-                    .await;
-            }
+    match decide_proof_handle_followup(maybe_packet) {
+        ProofHandleFollowup::SendDirect { packet, iface } => {
+            handler
+                .send(TxMessage {
+                    tx_type: TxMessageType::Direct(iface),
+                    packet,
+                })
+                .await;
         }
-        ProofForwarding::DoNotForward => {}
+        ProofHandleFollowup::NoOp => {}
     }
 }
 
@@ -748,16 +749,16 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
         if let Some(link) = handler.in_links.get(&packet.destination).cloned() {
             let mut link = link.lock().await;
             let result = link.handle_packet(packet, false);
-            match result {
-                LinkHandleResult::KeepAlive => {
+            match decide_link_handle_followup(result) {
+                LinkHandleFollowup::SendKeepAliveResponse => {
                     let packet = link.keep_alive_packet(KEEP_ALIVE_RESPONSE);
                     handler.send_packet(packet).await;
                 }
-                LinkHandleResult::MessageReceived(Some(proof)) => {
+                LinkHandleFollowup::SendProof(proof) => {
                     handler.send_packet(proof).await;
                 }
-                _ => {}
-            }
+                LinkHandleFollowup::NoOp => {}
+            };
         }
 
         for link in handler.out_links.values() {
@@ -1479,7 +1480,11 @@ async fn manage_transport(
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
                         if let Some(instant) = last_retransmit_old {
                             let now = time::Instant::now();
-                            if now - instant > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
+                            let elapsed = now - instant;
+                            if decide_old_announce_retransmit(
+                                elapsed,
+                                INTERVAL_OLD_ANNOUNCES_RETRANSMIT,
+                            ) {
                                 retransmit_announces(handler.lock().await, true).await;
                                 last_retransmit_old = Some(now);
                             }

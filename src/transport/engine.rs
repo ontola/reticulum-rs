@@ -1,7 +1,8 @@
 use crate::{
     hash::AddressHash,
     destination::link::LinkStatus,
-    packet::{PacketContext, PacketType},
+    destination::link::LinkHandleResult,
+    packet::{Packet, PacketContext, PacketType},
 };
 use core::time::Duration;
 
@@ -282,22 +283,6 @@ pub fn decide_single_data_route(has_local_destination: bool) -> SingleDataRoute 
     }
 }
 
-/// Runtime-agnostic decision for proof packet forwarding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProofForwarding {
-    Forward,
-    DoNotForward,
-}
-
-/// Decide whether a proof-related packet should be forwarded.
-pub fn decide_proof_forwarding(has_link_table_lookup: bool) -> ProofForwarding {
-    if has_link_table_lookup {
-        ProofForwarding::Forward
-    } else {
-        ProofForwarding::DoNotForward
-    }
-}
-
 /// Runtime-agnostic local follow-up for proof packets on out-links.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofLinkFollowup {
@@ -311,6 +296,56 @@ pub fn decide_proof_link_followup(link_activated: bool) -> ProofLinkFollowup {
         ProofLinkFollowup::SendRtt
     } else {
         ProofLinkFollowup::NoOp
+    }
+}
+
+/// What follow-up action `transport.rs` should perform after the link-table returns an optional proof packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProofHandleFollowup {
+    SendDirect { packet: Packet, iface: AddressHash },
+    NoOp,
+}
+
+/// Decide transport follow-up based on optional proof packet produced by link-table logic.
+///
+/// - `Some((packet, iface))` => `SendDirect`
+/// - `None` => `NoOp`
+pub fn decide_proof_handle_followup(
+    maybe_packet: Option<(Packet, AddressHash)>,
+) -> ProofHandleFollowup {
+    match maybe_packet {
+        Some((packet, iface)) => ProofHandleFollowup::SendDirect { packet, iface },
+        None => ProofHandleFollowup::NoOp,
+    }
+}
+
+/// What follow-up action `transport.rs` should perform after `link.handle_packet(...)`.
+///
+/// This is deterministic decision logic only:
+/// - It has no async code
+/// - It has no side effects
+/// - It only translates `LinkHandleResult` -> "which action should happen"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkHandleFollowup {
+    /// Send a keep-alive response back to the peer.
+    SendKeepAliveResponse,
+    /// Send the proof packet back into transport.
+    SendProof(Packet),
+    /// No additional transport action is required.
+    NoOp,
+}
+
+/// Decide transport follow-up based on the result returned by `Link::handle_packet`.
+///
+/// Mapping:
+/// - `KeepAlive` -> `SendKeepAliveResponse`
+/// - `MessageReceived(Some(proof))` -> `SendProof(proof)`
+/// - everything else -> `NoOp`
+pub fn decide_link_handle_followup(result: LinkHandleResult) -> LinkHandleFollowup {
+    match result {
+        LinkHandleResult::KeepAlive => LinkHandleFollowup::SendKeepAliveResponse,
+        LinkHandleResult::MessageReceived(Some(proof)) => LinkHandleFollowup::SendProof(proof),
+        _ => LinkHandleFollowup::NoOp,
     }
 }
 
@@ -353,6 +388,17 @@ pub fn classify_keepalive_byte(byte: Option<u8>) -> KeepAliveKind {
 pub fn should_handle_keepalive_response(context: PacketContext, first_byte: Option<u8>) -> bool {
     context == PacketContext::KeepAlive
         && classify_keepalive_byte(first_byte) == KeepAliveKind::Response
+}
+
+/// Decide whether enough time passed to retransmit "old announces".
+///
+/// This is pure timing policy only: it compares an already-computed elapsed
+/// duration against the configured retransmit interval.
+pub fn decide_old_announce_retransmit(
+    elapsed: Duration,
+    interval_old_announces_retransmit: Duration,
+) -> bool {
+    elapsed > interval_old_announces_retransmit
 }
 
 /// Determine ingress handling without runtime-specific dependencies.
@@ -404,6 +450,17 @@ pub fn allow_duplicate_packet(
     }
 }
 
+/// Gate for when transport should compute the "in-link pending proof" condition.
+///
+/// This is extracted so transport doesn't have to embed the protocol rule
+/// `packet_type == Proof && context == LinkRequestProof` directly.
+pub fn should_consider_in_link_pending_proof(
+    packet_type: PacketType,
+    context: PacketContext,
+) -> bool {
+    packet_type == PacketType::Proof && context == PacketContext::LinkRequestProof
+}
+
 /// Combine cache state and duplicate policy into a final handling outcome.
 pub fn duplicate_outcome(is_new: bool, allow_duplicate: bool) -> DuplicateOutcome {
     if is_new {
@@ -448,19 +505,25 @@ mod tests {
         decide_announce_discovery_route, decide_announce_retransmit_action,
         decide_fixed_destination_route, decide_link_request_route, DuplicateOutcome,
         IngressAction, IngressDecision, IngressReason, KeepAliveKind, LinkDataAction,
-        LinkRequestRoute, PathRequestRoute, ProofForwarding, SingleDataRoute,
+        LinkRequestRoute, PathRequestRoute, SingleDataRoute,
         LinkDestinationDataRoute, AnnounceDiscoveryRoute, AnnounceRetransmitAction,
         FixedDestinationRoute, InLinkRegistrationAction, IntermediateLinkRequestAction,
         InLinkMaintenanceAction, OutLinkMaintenanceAction,
         decide_in_link_registration_action, decide_intermediate_link_request_action,
         decide_in_link_maintenance_action, decide_out_link_maintenance_action,
-        decide_link_destination_data_route, decide_path_request_route, decide_proof_forwarding,
-        decide_proof_link_followup, decide_single_data_route, is_circular_path_request,
-        ProofLinkFollowup, classify_keepalive_byte, should_handle_keepalive_response,
+        decide_link_destination_data_route, decide_path_request_route,
+        decide_proof_link_followup, decide_proof_handle_followup, decide_single_data_route,
+        decide_link_handle_followup,
+        is_circular_path_request, ProofLinkFollowup, LinkHandleFollowup,
+        ProofHandleFollowup,
+        classify_keepalive_byte, should_handle_keepalive_response,
+        should_consider_in_link_pending_proof,
+        decide_old_announce_retransmit,
     };
     use crate::hash::AddressHash;
-    use crate::packet::{PacketContext, PacketType};
+    use crate::packet::{Packet, PacketContext, PacketType};
     use crate::destination::link::LinkStatus;
+    use crate::destination::link::LinkHandleResult;
     use core::time::Duration;
 
     #[test]
@@ -807,18 +870,6 @@ mod tests {
     }
 
     #[test]
-    fn proof_forwarding_decision() {
-        assert_eq!(
-            decide_proof_forwarding(true),
-            ProofForwarding::Forward
-        );
-        assert_eq!(
-            decide_proof_forwarding(false),
-            ProofForwarding::DoNotForward
-        );
-    }
-
-    #[test]
     fn proof_link_followup_decision() {
         assert_eq!(
             decide_proof_link_followup(true),
@@ -827,6 +878,79 @@ mod tests {
         assert_eq!(
             decide_proof_link_followup(false),
             ProofLinkFollowup::NoOp
+        );
+    }
+
+    #[test]
+    fn link_handle_followup_decision() {
+        // Table-driven test: easier to add new LinkHandleResult cases later.
+        let proof = Packet::default();
+        let cases: [(LinkHandleResult, LinkHandleFollowup); 4] = [
+            (
+                LinkHandleResult::KeepAlive,
+                LinkHandleFollowup::SendKeepAliveResponse,
+            ),
+            (
+                LinkHandleResult::MessageReceived(Some(proof)),
+                LinkHandleFollowup::SendProof(proof),
+            ),
+            (
+                LinkHandleResult::MessageReceived(None),
+                LinkHandleFollowup::NoOp,
+            ),
+            (LinkHandleResult::Activated, LinkHandleFollowup::NoOp),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(decide_link_handle_followup(input), expected);
+        }
+    }
+
+    #[test]
+    fn in_link_pending_proof_candidate_gate() {
+        assert!(should_consider_in_link_pending_proof(
+            PacketType::Proof,
+            PacketContext::LinkRequestProof
+        ));
+        assert!(!should_consider_in_link_pending_proof(
+            PacketType::Data,
+            PacketContext::LinkRequestProof
+        ));
+        assert!(!should_consider_in_link_pending_proof(
+            PacketType::Proof,
+            PacketContext::None
+        ));
+    }
+
+    #[test]
+    fn old_announce_retransmit_timing() {
+        let interval = Duration::from_secs(60);
+        assert!(!decide_old_announce_retransmit(
+            Duration::from_secs(59),
+            interval
+        ));
+        assert!(!decide_old_announce_retransmit(
+            Duration::from_secs(60),
+            interval
+        ));
+        assert!(decide_old_announce_retransmit(
+            Duration::from_secs(61),
+            interval
+        ));
+    }
+
+    #[test]
+    fn proof_handle_followup_decision() {
+        let iface = AddressHash::new([7u8; 16]);
+        let packet = Packet::default();
+
+        assert_eq!(
+            decide_proof_handle_followup(Some((packet, iface))),
+            ProofHandleFollowup::SendDirect { packet, iface }
+        );
+        assert_eq!(
+            decide_proof_handle_followup(None),
+            ProofHandleFollowup::NoOp
         );
     }
 
