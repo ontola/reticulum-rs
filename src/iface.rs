@@ -42,15 +42,14 @@ pub mod tcp_server;
 pub mod udp;
 
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::Mutex as StdMutex;
 
-use tokio::sync::mpsc;
-use tokio::task;
-use tokio_util::sync::CancellationToken;
-
+use crate::async_backend::mpsc;
+use crate::async_backend::spawn;
+use crate::async_backend::Mutex;
+use crate::async_backend::CancellationToken;
 use crate::hash::AddressHash;
 use crate::hash::Hash;
-use crate::packet::Packet;
 
 /// Sender channel type for transmitting packets to an interface.
 pub type InterfaceTxSender = mpsc::Sender<TxMessage>;
@@ -62,40 +61,7 @@ pub type InterfaceRxSender = mpsc::Sender<RxMessage>;
 /// Receiver channel type for packets received from an interface.
 pub type InterfaceRxReceiver = mpsc::Receiver<RxMessage>;
 
-/// The type of transmission message, determining how a packet should be sent.
-///
-/// This determines whether a packet is broadcast to all interfaces
-/// or sent directly to a specific interface.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum TxMessageType {
-    /// Broadcast the packet to all interfaces except optionally excluded one.
-    Broadcast(Option<AddressHash>),
-    /// Send directly to a specific interface address.
-    Direct(AddressHash),
-}
-
-/// A message for transmitting a packet through an interface.
-///
-/// This is the core message type used to send packets via the
-/// interface channel system.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct TxMessage {
-    /// The transmission type (broadcast or direct).
-    pub tx_type: TxMessageType,
-    /// The packet to transmit.
-    pub packet: Packet,
-}
-
-/// A message received from an interface.
-///
-/// Contains the source interface address and the received packet.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct RxMessage {
-    /// The address of the interface that received this packet.
-    pub address: AddressHash,
-    /// The received packet.
-    pub packet: Packet,
-}
+pub use crate::iface_messages::{RxMessage, TxMessage, TxMessageType};
 
 /// A communication channel for an interface.
 ///
@@ -200,7 +166,7 @@ struct LocalInterface {
 /// communication channels and cancellation token.
 pub struct InterfaceContext<T: Interface> {
     /// The interface implementation.
-    pub inner: Arc<Mutex<T>>,
+    pub inner: Arc<StdMutex<T>>,
     /// The interface's communication channel.
     pub channel: InterfaceChannel,
     /// Token for stopping the interface.
@@ -214,7 +180,7 @@ pub struct InterfaceContext<T: Interface> {
 /// communication between interfaces and the transport layer.
 pub struct InterfaceManager {
     counter: usize,
-    rx_recv: Arc<tokio::sync::Mutex<InterfaceRxReceiver>>,
+    rx_recv: Arc<Mutex<InterfaceRxReceiver>>,
     rx_send: InterfaceRxSender,
     cancel: CancellationToken,
     ifaces: Vec<LocalInterface>,
@@ -236,7 +202,7 @@ impl InterfaceManager {
     /// ```
     pub fn new(rx_cap: usize) -> Self {
         let (rx_send, rx_recv) = InterfaceChannel::make_rx_channel(rx_cap);
-        let rx_recv = Arc::new(tokio::sync::Mutex::new(rx_recv));
+        let rx_recv = Arc::new(Mutex::new(rx_recv));
 
         Self {
             counter: 0,
@@ -297,7 +263,7 @@ impl InterfaceManager {
     pub fn new_context<T: Interface>(&mut self, inner: T) -> InterfaceContext<T> {
         let channel = self.new_channel(1);
 
-        let inner = Arc::new(Mutex::new(inner));
+        let inner = Arc::new(StdMutex::new(inner));
 
         let context = InterfaceContext::<T> {
             inner: inner.clone(),
@@ -330,13 +296,13 @@ impl InterfaceManager {
         let context = self.new_context(inner);
         let address = context.channel.address().clone();
 
-        task::spawn(worker(context));
+        spawn(worker(context));
 
         address
     }
 
     /// Returns a reference to the global receive channel.
-    pub fn receiver(&self) -> Arc<tokio::sync::Mutex<InterfaceRxReceiver>> {
+    pub fn receiver(&self) -> Arc<Mutex<InterfaceRxReceiver>> {
         self.rx_recv.clone()
     }
 

@@ -26,7 +26,12 @@ use std::sync::Arc;
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio_util::sync::CancellationToken;
+
+use crate::async_backend::spawn;
+use crate::async_backend::time;
+use crate::async_backend::CancellationToken;
+use crate::async_backend::Mutex;
+use crate::async_select;
 
 use crate::buffer::{InputBuffer, OutputBuffer};
 use crate::error::RnsError;
@@ -95,7 +100,7 @@ impl TcpClient {
         let mut stream = { context.inner.lock().unwrap().stream.take() };
 
         let (rx_channel, tx_channel) = context.channel.split();
-        let tx_channel = Arc::new(tokio::sync::Mutex::new(tx_channel));
+        let tx_channel = Arc::new(Mutex::new(tx_channel));
 
         let mut running = true;
         loop {
@@ -117,7 +122,7 @@ impl TcpClient {
 
             if let Err(_) = stream {
                 log::info!("tcp_client: couldn't connect to <{}>", addr);
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
 
@@ -138,13 +143,13 @@ impl TcpClient {
                 let mut stream = read_stream;
                 let rx_channel = rx_channel.clone();
 
-                tokio::spawn(async move {
+                spawn(async move {
                     let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
                     let mut rx_buffer = [0u8; BUFFER_SIZE + (BUFFER_SIZE / 2)];
                     let mut tcp_buffer = [0u8; (BUFFER_SIZE * 16)];
 
                     loop {
-                        tokio::select! {
+                        async_select! {
                             _ = cancel.cancelled() => {
                                     break;
                             }
@@ -208,7 +213,7 @@ impl TcpClient {
                 let tx_channel = tx_channel.clone();
                 let mut stream = write_stream;
 
-                tokio::spawn(async move {
+                spawn(async move {
                     loop {
                         if stop.is_cancelled() {
                             break;
@@ -219,7 +224,7 @@ impl TcpClient {
 
                         let mut tx_channel = tx_channel.lock().await;
 
-                        tokio::select! {
+                        async_select! {
                             _ = cancel.cancelled() => {
                                     break;
                             }

@@ -57,6 +57,8 @@ esp-backtrace = { version = "0.15", features = ["esp32s3", "panic-handler", "pri
 esp-println = { version = "0.13", features = ["esp32s3", "log"], optional = true }
 embassy-executor = { version = "0.7", optional = true }
 embassy-time = { version = "0.4", optional = true }
+embassy-sync = { version = "0.8", optional = true }
+futures = { version = "0.3.30", default-features = false, features = ["async-await", "alloc"], optional = true }
 xtensa-lx-rt = { version = "0.21", optional = true }
 
 [features]
@@ -64,7 +66,7 @@ default = []
 std = ["alloc", "dep:tokio", "dep:tokio-stream", "dep:tokio-util", "dep:env_logger", "dep:tonic", "dep:prost", "dep:log", "rand_core/getrandom", "serde/std"]
 alloc = []
 fernet-aes128 = []
-embedded = ["alloc", "dep:esp-hal", "dep:esp-hal-embassy", "dep:esp-backtrace", "dep:esp-println", "dep:embassy-executor", "dep:embassy-time", "dep:xtensa-lx-rt", "dep:log"]
+embedded = ["alloc", "dep:esp-hal", "dep:esp-hal-embassy", "dep:esp-backtrace", "dep:esp-println", "dep:embassy-executor", "dep:embassy-time", "dep:embassy-sync", "dep:futures", "dep:xtensa-lx-rt", "dep:log"]
 
 [build-dependencies]
 tonic-build = "0.13.0"

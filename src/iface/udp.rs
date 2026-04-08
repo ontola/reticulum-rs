@@ -25,7 +25,12 @@
 use std::sync::Arc;
 
 use tokio::net::UdpSocket;
-use tokio_util::sync::CancellationToken;
+
+use crate::async_backend::spawn;
+use crate::async_backend::time;
+use crate::async_backend::CancellationToken;
+use crate::async_backend::Mutex;
+use crate::async_select;
 
 use crate::buffer::{InputBuffer, OutputBuffer};
 use crate::error::RnsError;
@@ -77,7 +82,7 @@ impl UdpInterface {
         let iface_address = context.channel.address;
 
         let (rx_channel, tx_channel) = context.channel.split();
-        let tx_channel = Arc::new(tokio::sync::Mutex::new(tx_channel));
+        let tx_channel = Arc::new(Mutex::new(tx_channel));
 
         loop {
             if context.cancel.is_cancelled() {
@@ -90,7 +95,7 @@ impl UdpInterface {
 
             if let Err(_) = socket {
                 log::info!("udp_interface: couldn't bind to <{}>", bind_addr);
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
 
@@ -112,11 +117,11 @@ impl UdpInterface {
                 let socket = read_socket;
                 let rx_channel = rx_channel.clone();
 
-                tokio::spawn(async move {
+                spawn(async move {
                     loop {
                         let mut rx_buffer = [0u8; BUFFER_SIZE];
 
-                        tokio::select! {
+                        async_select! {
                             _ = cancel.cancelled() => {
                                     break;
                             }
@@ -158,7 +163,7 @@ impl UdpInterface {
                     let tx_channel = tx_channel.clone();
                     let socket = write_socket;
 
-                    tokio::spawn(async move {
+                    spawn(async move {
                         loop {
                             if stop.is_cancelled() {
                                 break;
@@ -168,7 +173,7 @@ impl UdpInterface {
 
                             let mut tx_channel = tx_channel.lock().await;
 
-                            tokio::select! {
+                            async_select! {
                                 _ = cancel.cancelled() => {
                                         break;
                                 }

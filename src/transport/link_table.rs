@@ -19,7 +19,7 @@
 //! This is used internally by the Transport to manage link state.
 
 use std::collections::HashMap;
-use tokio::time::{Duration, Instant};
+use crate::async_backend::time::{Duration, Instant};
 
 use crate::destination::link::LinkId;
 use crate::hash::AddressHash;

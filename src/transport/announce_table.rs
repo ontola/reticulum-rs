@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use tokio::time::{Duration, Instant};
+use crate::async_backend::time::{Duration, Instant};
 
 use crate::hash::AddressHash;
 use crate::iface::{TxMessage, TxMessageType};

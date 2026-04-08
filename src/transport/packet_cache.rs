@@ -17,12 +17,9 @@
 //! This is used internally by the Transport to prevent processing
 //! the same packet multiple times.
 
-use std::{
-    cmp::min,
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::{cmp::min, collections::HashMap};
 
+use crate::async_backend::time::{Duration, Instant};
 use crate::{hash::Hash, packet::Packet};
 
 pub struct PacketTrack {

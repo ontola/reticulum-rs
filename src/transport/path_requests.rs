@@ -2,7 +2,7 @@ use alloc::collections::{BTreeSet, BTreeMap};
 
 use rand_core::OsRng;
 
-use tokio::time::{Duration, Instant};
+use crate::async_backend::time::Instant;
 
 use crate::destination::DestinationName;
 use crate::destination::PlainInputDestination;

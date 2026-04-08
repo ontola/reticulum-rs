@@ -19,8 +19,9 @@
 //!
 //! This is used internally by the Transport to manage routing state.
 
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
+use crate::async_backend::time::Instant;
 use crate::{
     hash::{AddressHash, Hash},
     packet::{DestinationType, Header, HeaderType, IfacFlag, Packet, PacketType},

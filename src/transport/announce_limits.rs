@@ -19,8 +19,7 @@
 
 use alloc::collections::BTreeMap;
 
-use tokio::time::Duration;
-use tokio::time::Instant;
+use crate::async_backend::time::{Duration, Instant};
 
 use crate::hash::AddressHash;
 

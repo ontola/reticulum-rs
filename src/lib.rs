@@ -141,6 +141,10 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+/// Interface↔transport message types (no Tokio / no I/O).
+#[cfg(feature = "alloc")]
+pub mod iface_messages;
+
 pub mod buffer;
 pub mod crypt;
 pub mod destination;
@@ -155,6 +159,10 @@ pub mod transport;
 pub mod serde;
 #[cfg(feature = "std")]
 pub mod my_code;
+
+/// Async runtime adapter (Tokio when `std`, Embassy-oriented types when `embedded` without `std`).
+#[cfg(any(feature = "std", feature = "embedded"))]
+pub mod async_backend;
 
 #[cfg(feature = "std")]
 mod utils;

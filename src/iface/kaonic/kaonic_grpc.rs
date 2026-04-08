@@ -8,10 +8,14 @@ use std::time::Duration;
 use proto::device_client::DeviceClient;
 use proto::radio_client::RadioClient;
 use proto::RadioFrame;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::Mutex;
+use crate::async_backend::mpsc::Receiver;
 use tokio_stream::StreamExt;
-use tokio_util::sync::CancellationToken;
+
+use crate::async_backend::spawn;
+use crate::async_backend::time;
+use crate::async_backend::CancellationToken;
+use crate::async_backend::Mutex;
+use crate::async_select;
 use tonic::transport::Channel;
 
 use crate::buffer::{InputBuffer, OutputBuffer};
@@ -53,7 +57,7 @@ impl KaonicGrpc {
 
         let (rx_channel, tx_channel) = context.channel.split();
 
-        let tx_channel = Arc::new(tokio::sync::Mutex::new(tx_channel));
+        let tx_channel = Arc::new(Mutex::new(tx_channel));
 
         let config_channel = context.inner.lock().unwrap().config_channel.clone();
 
@@ -70,7 +74,7 @@ impl KaonicGrpc {
 
             if let Err(err) = grpc_channel {
                 log::warn!("kaonic_grpc: couldn't connect to <{}> = '{}'", addr, err);
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
 
@@ -101,13 +105,13 @@ impl KaonicGrpc {
                 let rx_channel = rx_channel.clone();
                 let current_config = current_config.clone();
 
-                tokio::spawn(async move {
+                spawn(async move {
                     let mut rx_buffer = [0u8; BUFFER_SIZE];
 
                     log::trace!("kaonic_grpc: start rx task");
 
                     loop {
-                        tokio::select! {
+                        async_select! {
                             _ = cancel.cancelled() => {
                                     break;
                             }
@@ -145,11 +149,11 @@ impl KaonicGrpc {
                     let config_channel = config_channel.clone();
                     let current_config = current_config.clone();
 
-                    tokio::spawn(async move {
+                    spawn(async move {
                         loop {
                             let mut config_channel = config_channel.lock().await;
 
-                            tokio::select! {
+                            async_select! {
                                 _ = cancel.cancelled() => {
                                         break;
                                 },
@@ -178,13 +182,13 @@ impl KaonicGrpc {
                 let tx_channel = tx_channel.clone();
                 let current_config = current_config.clone();
 
-                tokio::spawn(async move {
+                spawn(async move {
                     let mut tx_buffer = [0u8; BUFFER_SIZE];
                     log::trace!("kaonic_grpc: start tx task");
                     loop {
                         let mut tx_channel = tx_channel.lock().await;
 
-                        tokio::select! {
+                        async_select! {
                             _ = cancel.cancelled() => {
                                     break;
                             },

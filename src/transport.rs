@@ -10,12 +10,12 @@ use path_table::PathTable;
 use rand_core::OsRng;
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::time;
-use tokio_util::sync::CancellationToken;
+use crate::async_backend::time;
+use crate::async_backend::CancellationToken;
 
-use tokio::sync::broadcast;
-use tokio::sync::Mutex;
-use tokio::sync::MutexGuard;
+use crate::async_backend::broadcast;
+use crate::async_backend::Mutex;
+use crate::async_backend::MutexGuard;
 
 use crate::destination::link::Link;
 use crate::destination::link::LinkEventData;
@@ -40,6 +40,8 @@ use crate::iface::InterfaceRxReceiver;
 use crate::iface::RxMessage;
 use crate::iface::TxMessage;
 use crate::iface::TxMessageType;
+
+use crate::async_select;
 
 use crate::packet::DestinationType;
 use crate::packet::Header;
@@ -242,11 +244,11 @@ impl Default for TransportConfig {
 
 impl Transport {
     pub fn new(config: TransportConfig) -> Self {
-        let (announce_tx, _) = tokio::sync::broadcast::channel(16);
-        let (link_in_event_tx, _) = tokio::sync::broadcast::channel(16);
-        let (link_out_event_tx, _) = tokio::sync::broadcast::channel(16);
-        let (received_data_tx, _) = tokio::sync::broadcast::channel(16);
-        let (iface_messages_tx, _) = tokio::sync::broadcast::channel(16);
+        let (announce_tx, _) = broadcast::channel(16);
+        let (link_in_event_tx, _) = broadcast::channel(16);
+        let (link_out_event_tx, _) = broadcast::channel(16);
+        let (received_data_tx, _) = broadcast::channel(16);
+        let (iface_messages_tx, _) = broadcast::channel(16);
 
         let iface_manager = InterfaceManager::new(16);
 
@@ -1263,7 +1265,7 @@ async fn manage_transport(
             handler.lock().await.config.name
         );
 
-        tokio::spawn(async move {
+        crate::async_backend::spawn(async move {
             loop {
                 let mut rx_receiver = rx_receiver.lock().await;
 
@@ -1271,7 +1273,7 @@ async fn manage_transport(
                     break;
                 }
 
-                tokio::select! {
+                async_select! {
                     _ = cancel.cancelled() => {
                         break;
                     },
@@ -1371,13 +1373,13 @@ async fn manage_transport(
         let handler = handler.clone();
         let cancel = cancel.clone();
 
-        tokio::spawn(async move {
+        crate::async_backend::spawn(async move {
             loop {
                 if cancel.is_cancelled() {
                     break;
                 }
 
-                tokio::select! {
+                async_select! {
                     _ = cancel.cancelled() => {
                         break;
                     },
@@ -1393,13 +1395,13 @@ async fn manage_transport(
         let handler = handler.clone();
         let cancel = cancel.clone();
 
-        tokio::spawn(async move {
+        crate::async_backend::spawn(async move {
             loop {
                 if cancel.is_cancelled() {
                     break;
                 }
 
-                tokio::select! {
+                async_select! {
                     _ = cancel.cancelled() => {
                         break;
                     },
@@ -1415,13 +1417,13 @@ async fn manage_transport(
         let handler = handler.clone();
         let cancel = cancel.clone();
 
-        tokio::spawn(async move {
+        crate::async_backend::spawn(async move {
             loop {
                 if cancel.is_cancelled() {
                     break;
                 }
 
-                tokio::select! {
+                async_select! {
                     _ = cancel.cancelled() => {
                         break;
                     },
@@ -1437,13 +1439,13 @@ async fn manage_transport(
         let handler = handler.clone();
         let cancel = cancel.clone();
 
-        tokio::spawn(async move {
+        crate::async_backend::spawn(async move {
             loop {
                 if cancel.is_cancelled() {
                     break;
                 }
 
-                tokio::select! {
+                async_select! {
                     _ = cancel.cancelled() => {
                         break;
                     },
@@ -1467,13 +1469,13 @@ async fn manage_transport(
         let handler = handler.clone();
         let cancel = cancel.clone();
 
-        tokio::spawn(async move {
+        crate::async_backend::spawn(async move {
             loop {
                 if cancel.is_cancelled() {
                     break;
                 }
 
-                tokio::select! {
+                async_select! {
                     _ = cancel.cancelled() => {
                         break;
                     },
@@ -1565,7 +1567,7 @@ mod tests {
             DuplicateOutcome::DropDuplicate
         );
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        time::sleep(Duration::from_secs(2)).await;
         handler
             .lock()
             .await
