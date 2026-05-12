@@ -230,6 +230,11 @@ fn find_rxdata_prefix(buf: &[u8]) -> Option<usize> {
     fallback_any
 }
 
+/// Fast check: does current UART buffer contain any `+RXDATA:` marker.
+pub fn has_rxdata_prefix(buf: &[u8]) -> bool {
+    find_rxdata_prefix(buf).is_some()
+}
+
 /// Parse `+RXDATA:<len>` line and return `(data_start, declared_len)`.
 fn rxdata_header(buf: &[u8]) -> Option<(usize, usize)> {
     let pos = find_rxdata_prefix(buf)?;

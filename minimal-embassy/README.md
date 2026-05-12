@@ -1,4 +1,4 @@
-# Minimal Embassy Rust
+# Minimal Embassy - T-Halow
 
 Run rust on your t-halow!
 
@@ -13,5 +13,5 @@ espup install
 cargo install espflash --version "^2" --force
 # ESP needs --release for decent performance
 # Select your T-Halow e.g. `/dev/cu.usbmodem11301`
-cargo +esp run --release
+cargo run --release
 ```

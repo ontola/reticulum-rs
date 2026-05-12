@@ -1,98 +1,41 @@
-use crate::{
-    hash::AddressHash,
-    destination::link::LinkStatus,
-    destination::link::LinkHandleResult,
-    packet::{Packet, PacketContext, PacketType},
-};
+use crate::destination::link::LinkStatus;
+use crate::packet::PacketContext;
 use core::time::Duration;
 
-/// Runtime-agnostic action chosen for packet ingress dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IngressAction {
-    Announce,
-    LinkRequest,
-    Proof,
-    Data,
-}
-
-/// Runtime-agnostic decision for how to process a received packet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IngressDecision {
-    /// Packet was already handled by fixed-destination logic.
-    HandleFixedDestination(IngressReason),
-    /// Packet should be dropped as duplicate.
-    DropDuplicate(IngressReason),
-    /// Packet should be dispatched to protocol handlers.
-    Dispatch {
-        /// Whether packet should be rebroadcast before dispatch.
-        rebroadcast: bool,
-        /// Protocol action to execute.
-        action: IngressAction,
-        /// Why this dispatch path was selected.
-        reason: IngressReason,
-    },
-}
-
-/// Explanation for ingress decision paths, used for traceability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IngressReason {
-    FixedDestinationMatched,
-    DuplicateFiltered,
-    FreshPacketDispatched,
-}
-
-/// Final duplicate-filter outcome after cache update and policy checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DuplicateOutcome {
-    AcceptNew,
-    AcceptAllowedDuplicate,
-    DropDuplicate,
-}
-
-/// Runtime-agnostic route decision for link request packets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkRequestRoute {
-    LocalDestination,
-    Intermediate,
-    DropUnknown,
-}
-
-/// Runtime-agnostic action for destination-side link-request handling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InLinkRegistrationAction {
-    CreateAndStore,
-    Skip,
-}
-
-/// Decide whether we should create/store a new in-link from a link request.
-pub fn decide_in_link_registration_action(
-    destination_requested_link_proof: bool,
-    in_link_already_exists: bool,
-) -> InLinkRegistrationAction {
-    if destination_requested_link_proof && !in_link_already_exists {
-        InLinkRegistrationAction::CreateAndStore
-    } else {
-        InLinkRegistrationAction::Skip
-    }
-}
-
-/// Runtime-agnostic action for intermediate link-request forwarding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntermediateLinkRequestAction {
-    AddLinkTableAndForward,
-    Skip,
-}
-
-/// Decide if intermediate link-request execution should run.
-pub fn decide_intermediate_link_request_action(
-    has_next_hop: bool,
-) -> IntermediateLinkRequestAction {
-    if has_next_hop {
-        IntermediateLinkRequestAction::AddLinkTableAndForward
-    } else {
-        IntermediateLinkRequestAction::Skip
-    }
-}
+// Compatibility re-exports: canonical policy now lives in `transport_engine`.
+#[allow(unused_imports)]
+pub use crate::transport_engine::{
+    allow_duplicate_packet, build_path_request_decision_input, classify_keepalive_byte, decide_announce_discovery_route,
+    decide_announce_retransmit_action, decide_fixed_destination_route, decide_ingress,
+    decide_link_lifecycle_transition,
+    decide_in_link_registration_action, decide_intermediate_link_request_action,
+    decide_link_destination_data_route, decide_link_request_route, decide_old_announce_retransmit,
+    decide_path_request_action, decide_path_request_action_from_state,
+    decide_path_request_action_from_input,
+    decide_staged_path_request_egress,
+    lookup_path_request_state,
+    recursive_broadcast_exclude_iface,
+    decide_path_request_execution_intent, decide_path_request_route,
+    decide_proof_handle_followup, decide_proof_link_followup,
+    decide_single_data_route, decide_duplicate_outcome, decide_ingress_from_duplicate_outcome,
+    decide_ingress_from_input, decide_ingress_with_duplicate_policy, duplicate_outcome,
+    is_circular_path_request, is_path_request_packet,
+    path_request_fixed_destination,
+    is_in_link_pending_proof,
+    should_handle_fixed_destination_path_request,
+    should_consider_in_link_pending_proof, should_handle_keepalive_response, AnnounceDiscoveryRoute,
+    AnnounceRetransmitAction, DuplicateOutcome, FixedDestinationRoute, IngressAction,
+    IngressDecision, IngressDecisionInput, IngressReason, KeepAliveKind,
+    InLinkRegistrationAction, IntermediateLinkRequestAction, LinkDestinationDataRoute, LinkLifecycleTransition, LinkRequestRoute,
+    PathRequestAction, PathRequestDecisionInput, PathRequestStateObservation,
+    PathRequestExecutionIntent, PathRequestRoute, ProofHandleFollowup, ProofLinkFollowup,
+    StagedPathRequestEgressDecision,
+    SingleDataRoute,
+    STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
+};
+#[cfg(feature = "std")]
+#[allow(unused_imports)]
+pub use crate::transport_engine::{decide_link_handle_followup, LinkHandleFollowup};
 
 /// Runtime-agnostic maintenance action for input links.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,324 +96,6 @@ pub fn decide_out_link_maintenance_action(
     }
 }
 
-/// Determine how a link request should be routed.
-pub fn decide_link_request_route(
-    has_local_destination: bool,
-    has_next_hop: bool,
-) -> LinkRequestRoute {
-    if has_local_destination {
-        LinkRequestRoute::LocalDestination
-    } else if has_next_hop {
-        LinkRequestRoute::Intermediate
-    } else {
-        LinkRequestRoute::DropUnknown
-    }
-}
-
-/// Runtime-agnostic decision for handling path requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathRequestRoute {
-    LocalDestinationResponse,
-    ScheduleRemoteResponse,
-    RecursiveBroadcast,
-    DropCircular,
-}
-
-/// Runtime-agnostic decision for fixed-destination dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FixedDestinationRoute {
-    PathRequestHandler,
-    Unhandled,
-}
-
-/// Decide if packet should be handled by fixed-destination path-request logic.
-pub fn decide_fixed_destination_route(
-    packet_destination: &AddressHash,
-    fixed_dest_path_requests: &AddressHash,
-) -> FixedDestinationRoute {
-    if packet_destination == fixed_dest_path_requests {
-        FixedDestinationRoute::PathRequestHandler
-    } else {
-        FixedDestinationRoute::Unhandled
-    }
-}
-
-/// Decide if a path request loops back to where it came from.
-pub fn is_circular_path_request(
-    requesting_transport: Option<&AddressHash>,
-    entry_received_from: Option<&AddressHash>,
-) -> bool {
-    matches!(
-        (requesting_transport, entry_received_from),
-        (Some(requestor), Some(received_from)) if requestor == received_from
-    )
-}
-
-/// Determine the route for a decoded path request.
-pub fn decide_path_request_route(
-    has_local_destination: bool,
-    retransmit_enabled: bool,
-    has_known_path: bool,
-    is_circular_request: bool,
-) -> PathRequestRoute {
-    if has_local_destination {
-        PathRequestRoute::LocalDestinationResponse
-    } else if retransmit_enabled && has_known_path {
-        if is_circular_request {
-            PathRequestRoute::DropCircular
-        } else {
-            PathRequestRoute::ScheduleRemoteResponse
-        }
-    } else {
-        PathRequestRoute::RecursiveBroadcast
-    }
-}
-
-/// Runtime-agnostic route decision for single-destination data packets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SingleDataRoute {
-    DeliverLocal,
-    Forward,
-}
-
-/// Runtime-agnostic decision for how to treat an announce for destination discovery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnnounceDiscoveryRoute {
-    IgnoreKnownDestination,
-    TrackPathOnly,
-    RegisterAndTrackPath,
-}
-
-/// Runtime-agnostic action for announce retransmit path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnnounceRetransmitAction {
-    SendGeneratedPacket,
-    Skip,
-}
-
-/// Decide if announce retransmit packet should be sent.
-pub fn decide_announce_retransmit_action(
-    retransmit_enabled: bool,
-    has_generated_packet: bool,
-) -> AnnounceRetransmitAction {
-    if retransmit_enabled && has_generated_packet {
-        AnnounceRetransmitAction::SendGeneratedPacket
-    } else {
-        AnnounceRetransmitAction::Skip
-    }
-}
-
-/// Decide announce discovery path based on existing destination knowledge.
-pub fn decide_announce_discovery_route(
-    destination_known: bool,
-    has_single_out_destination: bool,
-) -> AnnounceDiscoveryRoute {
-    if destination_known {
-        AnnounceDiscoveryRoute::IgnoreKnownDestination
-    } else if has_single_out_destination {
-        AnnounceDiscoveryRoute::TrackPathOnly
-    } else {
-        AnnounceDiscoveryRoute::RegisterAndTrackPath
-    }
-}
-
-/// Decide whether a single-destination packet is for us or should be forwarded.
-pub fn decide_single_data_route(has_local_destination: bool) -> SingleDataRoute {
-    if has_local_destination {
-        SingleDataRoute::DeliverLocal
-    } else {
-        SingleDataRoute::Forward
-    }
-}
-
-/// Runtime-agnostic local follow-up for proof packets on out-links.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProofLinkFollowup {
-    SendRtt,
-    NoOp,
-}
-
-/// Decide local follow-up based on whether proof activated the link.
-pub fn decide_proof_link_followup(link_activated: bool) -> ProofLinkFollowup {
-    if link_activated {
-        ProofLinkFollowup::SendRtt
-    } else {
-        ProofLinkFollowup::NoOp
-    }
-}
-
-/// What follow-up action `transport.rs` should perform after the link-table returns an optional proof packet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProofHandleFollowup {
-    SendDirect { packet: Packet, iface: AddressHash },
-    NoOp,
-}
-
-/// Decide transport follow-up based on optional proof packet produced by link-table logic.
-///
-/// - `Some((packet, iface))` => `SendDirect`
-/// - `None` => `NoOp`
-pub fn decide_proof_handle_followup(
-    maybe_packet: Option<(Packet, AddressHash)>,
-) -> ProofHandleFollowup {
-    match maybe_packet {
-        Some((packet, iface)) => ProofHandleFollowup::SendDirect { packet, iface },
-        None => ProofHandleFollowup::NoOp,
-    }
-}
-
-/// What follow-up action `transport.rs` should perform after `link.handle_packet(...)`.
-///
-/// This is deterministic decision logic only:
-/// - It has no async code
-/// - It has no side effects
-/// - It only translates `LinkHandleResult` -> "which action should happen"
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkHandleFollowup {
-    /// Send a keep-alive response back to the peer.
-    SendKeepAliveResponse,
-    /// Send the proof packet back into transport.
-    SendProof(Packet),
-    /// No additional transport action is required.
-    NoOp,
-}
-
-/// Decide transport follow-up based on the result returned by `Link::handle_packet`.
-///
-/// Mapping:
-/// - `KeepAlive` -> `SendKeepAliveResponse`
-/// - `MessageReceived(Some(proof))` -> `SendProof(proof)`
-/// - everything else -> `NoOp`
-pub fn decide_link_handle_followup(result: LinkHandleResult) -> LinkHandleFollowup {
-    match result {
-        LinkHandleResult::KeepAlive => LinkHandleFollowup::SendKeepAliveResponse,
-        LinkHandleResult::MessageReceived(Some(proof)) => LinkHandleFollowup::SendProof(proof),
-        _ => LinkHandleFollowup::NoOp,
-    }
-}
-
-/// Runtime-agnostic route for link-destination data packets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkDestinationDataRoute {
-    ProcessLocalOnly,
-    ProcessLocalAndForward,
-}
-
-/// Decide high-level handling route for link-destination packets.
-pub fn decide_link_destination_data_route(
-    has_link_table_destination: bool,
-) -> LinkDestinationDataRoute {
-    if has_link_table_destination {
-        LinkDestinationDataRoute::ProcessLocalAndForward
-    } else {
-        LinkDestinationDataRoute::ProcessLocalOnly
-    }
-}
-
-/// Runtime-agnostic meaning of keepalive payload byte.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeepAliveKind {
-    Request,
-    Response,
-    Unknown,
-}
-
-/// Decode keepalive marker byte to semantic meaning.
-pub fn classify_keepalive_byte(byte: Option<u8>) -> KeepAliveKind {
-    match byte {
-        Some(0xFF) => KeepAliveKind::Request,
-        Some(0xFE) => KeepAliveKind::Response,
-        _ => KeepAliveKind::Unknown,
-    }
-}
-
-/// Decide whether keepalive-response handling path should run.
-pub fn should_handle_keepalive_response(context: PacketContext, first_byte: Option<u8>) -> bool {
-    context == PacketContext::KeepAlive
-        && classify_keepalive_byte(first_byte) == KeepAliveKind::Response
-}
-
-/// Decide whether enough time passed to retransmit "old announces".
-///
-/// This is pure timing policy only: it compares an already-computed elapsed
-/// duration against the configured retransmit interval.
-pub fn decide_old_announce_retransmit(
-    elapsed: Duration,
-    interval_old_announces_retransmit: Duration,
-) -> bool {
-    elapsed > interval_old_announces_retransmit
-}
-
-/// Determine ingress handling without runtime-specific dependencies.
-pub fn decide_ingress(
-    packet_type: PacketType,
-    fixed_destination_handled: bool,
-    is_duplicate: bool,
-    broadcast_enabled: bool,
-) -> IngressDecision {
-    if fixed_destination_handled {
-        return IngressDecision::HandleFixedDestination(IngressReason::FixedDestinationMatched);
-    }
-
-    if is_duplicate {
-        return IngressDecision::DropDuplicate(IngressReason::DuplicateFiltered);
-    }
-
-    let rebroadcast = broadcast_enabled && packet_type != PacketType::Announce;
-    let action = match packet_type {
-        PacketType::Announce => IngressAction::Announce,
-        PacketType::LinkRequest => IngressAction::LinkRequest,
-        PacketType::Proof => IngressAction::Proof,
-        PacketType::Data => IngressAction::Data,
-    };
-
-    IngressDecision::Dispatch {
-        rebroadcast,
-        action,
-        reason: IngressReason::FreshPacketDispatched,
-    }
-}
-
-/// Decide whether duplicate packets of this kind should still be accepted.
-///
-/// Some protocol packets are intentionally allowed through even when they are
-/// duplicates (for example link handshake/proof edge-cases and keepalive data).
-pub fn allow_duplicate_packet(
-    packet_type: PacketType,
-    context: PacketContext,
-    in_link_pending_proof: bool,
-) -> bool {
-    match packet_type {
-        PacketType::Announce => true,
-        PacketType::LinkRequest => true,
-        PacketType::Data => context == PacketContext::KeepAlive,
-        PacketType::Proof => {
-            context == PacketContext::LinkRequestProof && in_link_pending_proof
-        }
-    }
-}
-
-/// Gate for when transport should compute the "in-link pending proof" condition.
-///
-/// This is extracted so transport doesn't have to embed the protocol rule
-/// `packet_type == Proof && context == LinkRequestProof` directly.
-pub fn should_consider_in_link_pending_proof(
-    packet_type: PacketType,
-    context: PacketContext,
-) -> bool {
-    packet_type == PacketType::Proof && context == PacketContext::LinkRequestProof
-}
-
-/// Combine cache state and duplicate policy into a final handling outcome.
-pub fn duplicate_outcome(is_new: bool, allow_duplicate: bool) -> DuplicateOutcome {
-    if is_new {
-        DuplicateOutcome::AcceptNew
-    } else if allow_duplicate {
-        DuplicateOutcome::AcceptAllowedDuplicate
-    } else {
-        DuplicateOutcome::DropDuplicate
-    }
-}
 
 /// Runtime-agnostic classification for link data packet handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -504,21 +129,37 @@ mod tests {
         allow_duplicate_packet, classify_link_data, decide_ingress, duplicate_outcome,
         decide_announce_discovery_route, decide_announce_retransmit_action,
         decide_fixed_destination_route, decide_link_request_route, DuplicateOutcome,
-        IngressAction, IngressDecision, IngressReason, KeepAliveKind, LinkDataAction,
-        LinkRequestRoute, PathRequestRoute, SingleDataRoute,
+        IngressAction, IngressDecision, IngressDecisionInput, IngressReason, KeepAliveKind, LinkDataAction,
+        LinkRequestRoute, PathRequestAction, PathRequestDecisionInput,
+        PathRequestExecutionIntent, PathRequestRoute, PathRequestStateObservation, SingleDataRoute,
+        StagedPathRequestEgressDecision,
         LinkDestinationDataRoute, AnnounceDiscoveryRoute, AnnounceRetransmitAction,
         FixedDestinationRoute, InLinkRegistrationAction, IntermediateLinkRequestAction,
+        LinkLifecycleTransition,
         InLinkMaintenanceAction, OutLinkMaintenanceAction,
         decide_in_link_registration_action, decide_intermediate_link_request_action,
+        decide_link_lifecycle_transition,
         decide_in_link_maintenance_action, decide_out_link_maintenance_action,
-        decide_link_destination_data_route, decide_path_request_route,
+        decide_link_destination_data_route, decide_path_request_action,
+        build_path_request_decision_input, decide_path_request_action_from_input,
+        decide_path_request_action_from_state,
+        decide_staged_path_request_egress, recursive_broadcast_exclude_iface,
+        lookup_path_request_state,
+        decide_path_request_execution_intent, decide_path_request_route,
         decide_proof_link_followup, decide_proof_handle_followup, decide_single_data_route,
         decide_link_handle_followup,
         is_circular_path_request, ProofLinkFollowup, LinkHandleFollowup,
-        ProofHandleFollowup,
+        ProofHandleFollowup, STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD, path_request_fixed_destination,
         classify_keepalive_byte, should_handle_keepalive_response,
+        should_handle_fixed_destination_path_request,
         should_consider_in_link_pending_proof,
+        is_in_link_pending_proof,
         decide_old_announce_retransmit,
+        is_path_request_packet,
+        decide_duplicate_outcome,
+        decide_ingress_from_duplicate_outcome,
+        decide_ingress_from_input,
+        decide_ingress_with_duplicate_policy,
     };
     use crate::hash::AddressHash;
     use crate::packet::{Packet, PacketContext, PacketType};
@@ -642,6 +283,71 @@ mod tests {
         assert_eq!(
             duplicate_outcome(false, false),
             DuplicateOutcome::DropDuplicate
+        );
+    }
+
+    #[test]
+    fn duplicate_decision_helper_matches_policy() {
+        assert_eq!(
+            decide_duplicate_outcome(PacketType::Data, PacketContext::None, false, true),
+            DuplicateOutcome::AcceptNew
+        );
+        assert_eq!(
+            decide_duplicate_outcome(PacketType::Announce, PacketContext::None, false, false),
+            DuplicateOutcome::AcceptAllowedDuplicate
+        );
+        assert_eq!(
+            decide_duplicate_outcome(PacketType::Data, PacketContext::None, false, false),
+            DuplicateOutcome::DropDuplicate
+        );
+    }
+
+    #[test]
+    fn ingress_with_duplicate_policy_matches_composed_behavior() {
+        let (dup, decision) = decide_ingress_with_duplicate_policy(
+            PacketType::Data,
+            PacketContext::None,
+            false,
+            false,
+            false,
+            true,
+        );
+        assert_eq!(dup, DuplicateOutcome::DropDuplicate);
+        assert_eq!(
+            decision,
+            IngressDecision::DropDuplicate(IngressReason::DuplicateFiltered)
+        );
+    }
+
+    #[test]
+    fn ingress_from_known_duplicate_outcome() {
+        let decision = decide_ingress_from_duplicate_outcome(
+            PacketType::Data,
+            false,
+            DuplicateOutcome::AcceptAllowedDuplicate,
+            true,
+        );
+        assert_eq!(
+            decision,
+            IngressDecision::Dispatch {
+                rebroadcast: true,
+                action: IngressAction::Data,
+                reason: IngressReason::FreshPacketDispatched
+            }
+        );
+    }
+
+    #[test]
+    fn ingress_from_input_mapping() {
+        let decision = decide_ingress_from_input(IngressDecisionInput {
+            packet_type: PacketType::Data,
+            fixed_destination_handled: false,
+            duplicate: DuplicateOutcome::DropDuplicate,
+            broadcast_enabled: true,
+        });
+        assert_eq!(
+            decision,
+            IngressDecision::DropDuplicate(IngressReason::DuplicateFiltered)
         );
     }
 
@@ -805,6 +511,222 @@ mod tests {
     }
 
     #[test]
+    fn path_request_execution_intent_mapping() {
+        assert_eq!(
+            decide_path_request_execution_intent(true, true, Some(3), false),
+            PathRequestExecutionIntent::LocalDestinationResponse
+        );
+        assert_eq!(
+            decide_path_request_execution_intent(false, true, Some(3), false),
+            PathRequestExecutionIntent::ScheduleRemoteResponse { hops: 3 }
+        );
+        assert_eq!(
+            decide_path_request_execution_intent(false, true, Some(3), true),
+            PathRequestExecutionIntent::DropCircular
+        );
+        assert_eq!(
+            decide_path_request_execution_intent(false, false, None, false),
+            PathRequestExecutionIntent::RecursiveBroadcast
+        );
+    }
+
+    #[test]
+    fn path_request_action_mapping() {
+        let destination = AddressHash::new([5u8; 16]);
+        let iface = AddressHash::new([6u8; 16]);
+        assert_eq!(
+            decide_path_request_action(destination, iface, true, true, Some(2), false),
+            PathRequestAction::LocalDestinationResponse { ingress_iface: iface }
+        );
+        assert_eq!(
+            decide_path_request_action(destination, iface, false, true, Some(4), false),
+            PathRequestAction::ScheduleRemoteResponse {
+                destination,
+                ingress_iface: iface,
+                hops: 4
+            }
+        );
+    }
+
+    #[test]
+    fn path_request_action_from_state_mapping() {
+        let destination = AddressHash::new([8u8; 16]);
+        let iface = AddressHash::new([9u8; 16]);
+        let requestor = AddressHash::new([10u8; 16]);
+        let received_from = AddressHash::new([11u8; 16]);
+        assert_eq!(
+            decide_path_request_action_from_state(
+                destination,
+                iface,
+                Some(&requestor),
+                Some(&received_from),
+                false,
+                true,
+                Some(2),
+            ),
+            PathRequestAction::ScheduleRemoteResponse {
+                destination,
+                ingress_iface: iface,
+                hops: 2
+            }
+        );
+        assert_eq!(
+            decide_path_request_action_from_state(
+                destination,
+                iface,
+                Some(&requestor),
+                Some(&requestor),
+                false,
+                true,
+                Some(2),
+            ),
+            PathRequestAction::DropCircular { destination }
+        );
+    }
+
+    #[test]
+    fn path_request_action_from_input_mapping() {
+        let destination = AddressHash::new([12u8; 16]);
+        let iface = AddressHash::new([13u8; 16]);
+        let input = PathRequestDecisionInput {
+            request_destination: destination,
+            ingress_iface: iface,
+            requesting_transport: None,
+            entry_received_from: None,
+            has_local_destination: false,
+            retransmit_enabled: false,
+            known_hops: None,
+        };
+        assert_eq!(
+            decide_path_request_action_from_input(input),
+            PathRequestAction::RecursiveBroadcast {
+                destination,
+                exclude_iface: iface
+            }
+        );
+    }
+
+    #[test]
+    fn path_request_state_lookup_mapping() {
+        let destination = AddressHash::new([7u8; 16]);
+        let other = AddressHash::new([8u8; 16]);
+        let recv = AddressHash::new([9u8; 16]);
+        let observation = lookup_path_request_state(
+            destination,
+            &[(other, AddressHash::new([1u8; 16])), (destination, recv)],
+            &[(other, 2), (destination, 4)],
+        );
+        assert_eq!(
+            observation,
+            PathRequestStateObservation {
+                entry_received_from: Some(recv),
+                known_hops: Some(4),
+            }
+        );
+    }
+
+    #[test]
+    fn path_request_decision_input_builder_mapping() {
+        let destination = AddressHash::new([1u8; 16]);
+        let iface = AddressHash::new([2u8; 16]);
+        let observation = PathRequestStateObservation {
+            entry_received_from: Some(AddressHash::new([3u8; 16])),
+            known_hops: Some(5),
+        };
+        let input = build_path_request_decision_input(
+            destination,
+            iface,
+            Some(AddressHash::new([4u8; 16])),
+            true,
+            false,
+            observation,
+        );
+        assert_eq!(input.request_destination, destination);
+        assert_eq!(input.ingress_iface, iface);
+        assert_eq!(input.requesting_transport, Some(AddressHash::new([4u8; 16])));
+        assert_eq!(input.entry_received_from, observation.entry_received_from);
+        assert_eq!(input.has_local_destination, true);
+        assert_eq!(input.retransmit_enabled, false);
+        assert_eq!(input.known_hops, observation.known_hops);
+    }
+
+    #[test]
+    fn link_lifecycle_transition_mapping() {
+        assert_eq!(
+            decide_link_lifecycle_transition(IngressAction::LinkRequest, true, false, false),
+            LinkLifecycleTransition::AddPending
+        );
+        assert_eq!(
+            decide_link_lifecycle_transition(IngressAction::LinkRequest, true, true, true),
+            LinkLifecycleTransition::None
+        );
+        assert_eq!(
+            decide_link_lifecycle_transition(IngressAction::Proof, false, false, true),
+            LinkLifecycleTransition::Activate
+        );
+        assert_eq!(
+            decide_link_lifecycle_transition(IngressAction::Proof, false, false, false),
+            LinkLifecycleTransition::None
+        );
+    }
+
+    #[test]
+    fn recursive_broadcast_iface_extraction() {
+        let destination = AddressHash::new([1u8; 16]);
+        let iface = AddressHash::new([2u8; 16]);
+        assert_eq!(
+            recursive_broadcast_exclude_iface(PathRequestAction::RecursiveBroadcast {
+                destination,
+                exclude_iface: iface
+            }),
+            Some(iface)
+        );
+        assert_eq!(
+            recursive_broadcast_exclude_iface(PathRequestAction::DropCircular { destination }),
+            None
+        );
+    }
+
+    #[test]
+    fn staged_path_request_egress_mapping() {
+        let destination = AddressHash::new([1u8; 16]);
+        let iface = AddressHash::new([2u8; 16]);
+
+        assert!(matches!(
+            decide_staged_path_request_egress(
+                PathRequestAction::RecursiveBroadcast {
+                    destination,
+                    exclude_iface: iface,
+                },
+                false
+            ),
+            StagedPathRequestEgressDecision::EmitRecursive { exclude_iface } if exclude_iface == iface
+        ));
+        assert!(matches!(
+            decide_staged_path_request_egress(
+                PathRequestAction::ScheduleRemoteResponse {
+                    destination,
+                    ingress_iface: iface,
+                    hops: 1,
+                },
+                true
+            ),
+            StagedPathRequestEgressDecision::CountOnly
+        ));
+        assert!(matches!(
+            decide_staged_path_request_egress(
+                PathRequestAction::ScheduleRemoteResponse {
+                    destination,
+                    ingress_iface: iface,
+                    hops: 1,
+                },
+                false
+            ),
+            StagedPathRequestEgressDecision::None
+        ));
+    }
+
+    #[test]
     fn circular_path_request_detection() {
         let a = AddressHash::new([1u8; 16]);
         let b = AddressHash::new([2u8; 16]);
@@ -923,6 +845,25 @@ mod tests {
     }
 
     #[test]
+    fn in_link_pending_proof_gate_combines_candidate_and_state() {
+        assert!(is_in_link_pending_proof(
+            PacketType::Proof,
+            PacketContext::LinkRequestProof,
+            true
+        ));
+        assert!(!is_in_link_pending_proof(
+            PacketType::Proof,
+            PacketContext::LinkRequestProof,
+            false
+        ));
+        assert!(!is_in_link_pending_proof(
+            PacketType::Data,
+            PacketContext::LinkRequestProof,
+            true
+        ));
+    }
+
+    #[test]
     fn old_announce_retransmit_timing() {
         let interval = Duration::from_secs(60);
         assert!(!decide_old_announce_retransmit(
@@ -987,6 +928,60 @@ mod tests {
         assert!(!should_handle_keepalive_response(
             PacketContext::None,
             Some(0xFE)
+        ));
+    }
+
+    #[test]
+    fn path_request_packet_classification() {
+        assert!(is_path_request_packet(
+            PacketType::Data,
+            PacketContext::Request,
+            b"anything"
+        ));
+        assert!(is_path_request_packet(
+            PacketType::Data,
+            PacketContext::None,
+            STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD
+        ));
+        assert!(!is_path_request_packet(
+            PacketType::Announce,
+            PacketContext::Request,
+            STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD
+        ));
+    }
+
+    #[test]
+    fn path_request_fixed_destination_is_stable() {
+        let a = path_request_fixed_destination();
+        let b = path_request_fixed_destination();
+        assert_eq!(a, b);
+        assert_ne!(a, AddressHash::new_empty());
+    }
+
+    #[test]
+    fn fixed_destination_path_request_gate() {
+        let fixed = path_request_fixed_destination();
+        assert!(should_handle_fixed_destination_path_request(
+            &fixed,
+            &fixed,
+            PacketType::Data,
+            PacketContext::Request,
+            b"anything"
+        ));
+        assert!(!should_handle_fixed_destination_path_request(
+            &fixed,
+            &fixed,
+            PacketType::Announce,
+            PacketContext::Request,
+            b"anything"
+        ));
+        let other = AddressHash::new([9u8; 16]);
+        assert!(!should_handle_fixed_destination_path_request(
+            &other,
+            &fixed,
+            PacketType::Data,
+            PacketContext::Request,
+            b"anything"
         ));
     }
 }

@@ -3,7 +3,6 @@ use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
 use link_table::LinkTable;
 use packet_cache::PacketCache;
-use path_requests::create_path_request_destination;
 use path_requests::PathRequests;
 use path_requests::TagBytes;
 use path_table::PathTable;
@@ -47,25 +46,30 @@ use crate::packet::DestinationType;
 use crate::packet::Header;
 use crate::packet::Packet;
 use crate::packet::PacketDataBuffer;
-use crate::packet::PacketType;
 
 use crate::my_code::runtime::Spawner;
 use crate::my_code::runtime_tokio::TokioRuntime;
+use crate::transport_engine::{
+    decide_announce_discovery_route, decide_announce_retransmit_action,
+    decide_duplicate_outcome,
+    decide_ingress_from_input, decide_link_request_route,
+    decide_link_handle_followup,
+    decide_link_destination_data_route, decide_link_lifecycle_transition,
+    decide_proof_handle_followup,
+    decide_old_announce_retransmit, decide_single_data_route,
+    build_path_request_decision_input, decide_path_request_action_from_input, is_in_link_pending_proof,
+    should_handle_fixed_destination_path_request, PathRequestAction, PathRequestStateObservation,
+    should_consider_in_link_pending_proof, should_handle_keepalive_response,
+    AnnounceDiscoveryRoute, AnnounceRetransmitAction, DuplicateOutcome,
+    IngressAction, IngressDecision, IngressDecisionInput, IngressReason,
+    LinkDestinationDataRoute, LinkRequestRoute,
+    LinkLifecycleTransition, ProofHandleFollowup, SingleDataRoute, LinkHandleFollowup,
+    path_request_fixed_destination,
+};
 use engine::{
-    allow_duplicate_packet, decide_announce_discovery_route, decide_ingress, duplicate_outcome,
-    is_circular_path_request, AnnounceDiscoveryRoute, AnnounceRetransmitAction,
-    DuplicateOutcome, FixedDestinationRoute, InLinkRegistrationAction, IngressAction,
-    IngressDecision, IngressReason, IntermediateLinkRequestAction, InLinkMaintenanceAction,
-    LinkDestinationDataRoute, LinkRequestRoute, OutLinkMaintenanceAction, PathRequestRoute,
-    ProofLinkFollowup, SingleDataRoute, decide_announce_retransmit_action,
-    decide_fixed_destination_route, decide_in_link_maintenance_action,
-    decide_in_link_registration_action, decide_intermediate_link_request_action,
-    decide_link_destination_data_route, decide_link_request_route, decide_out_link_maintenance_action,
-    decide_path_request_route, decide_proof_link_followup,
-    decide_link_handle_followup, LinkHandleFollowup, decide_proof_handle_followup,
-    ProofHandleFollowup,
-    decide_single_data_route, should_consider_in_link_pending_proof, should_handle_keepalive_response,
-    decide_old_announce_retransmit,
+    IntermediateLinkRequestAction, InLinkMaintenanceAction, OutLinkMaintenanceAction,
+    decide_in_link_maintenance_action, decide_intermediate_link_request_action,
+    decide_out_link_maintenance_action,
 };
 
 mod announce_limits;
@@ -263,7 +267,7 @@ impl Transport {
         };
         let path_requests = PathRequests::new(config.name.as_str(), transport_id);
 
-        let path_request_dest = create_path_request_destination().desc.address_hash;
+        let path_request_dest = path_request_fixed_destination();
 
         let cancel = CancellationToken::new();
         let name = config.name.clone();
@@ -629,7 +633,7 @@ impl TransportHandler {
             packet.context,
         );
 
-        let in_link_pending_proof = if should_consider {
+        let destination_pending = if should_consider {
             if let Some(link) = self.in_links.get(&packet.destination) {
                 link.lock().await.status().not_yet_active()
             } else {
@@ -638,16 +642,17 @@ impl TransportHandler {
         } else {
             false
         };
-
-        let allow_duplicate = allow_duplicate_packet(
-            packet.header.packet_type,
-            packet.context,
-            in_link_pending_proof,
-        );
+        let in_link_pending_proof =
+            is_in_link_pending_proof(packet.header.packet_type, packet.context, destination_pending);
 
         let is_new = self.packet_cache.lock().await.update(packet);
 
-        duplicate_outcome(is_new, allow_duplicate)
+        decide_duplicate_outcome(
+            packet.header.packet_type,
+            packet.context,
+            in_link_pending_proof,
+            is_new,
+        )
     }
 
     async fn request_path(
@@ -676,12 +681,17 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
         let activated = matches!(link.handle_packet(packet, true), LinkHandleResult::Activated);
-        match decide_proof_link_followup(activated) {
-            ProofLinkFollowup::SendRtt => {
+        match decide_link_lifecycle_transition(
+            IngressAction::Proof,
+            false,
+            false,
+            activated,
+        ) {
+            LinkLifecycleTransition::Activate => {
                 let rtt_packet = link.create_rtt();
                 handler.send_packet(rtt_packet).await;
             }
-            ProofLinkFollowup::NoOp => {}
+            LinkLifecycleTransition::AddPending | LinkLifecycleTransition::None => {}
         }
     }
 
@@ -906,18 +916,20 @@ async fn handle_path_request<'a>(
         let maybe_local_dest = handler.single_in_destinations.get(&request.destination).cloned();
         let maybe_entry = handler.path_table.get(&request.destination);
         let maybe_known_hops = maybe_entry.map(|entry| entry.hops);
-        let is_circular_request = is_circular_path_request(
-            request.requesting_transport.as_ref(),
-            maybe_entry.map(|entry| &entry.received_from),
-        );
 
-        match decide_path_request_route(
+        let input = build_path_request_decision_input(
+            request.destination,
+            iface,
+            request.requesting_transport,
             maybe_local_dest.is_some(),
             handler.config.retransmit,
-            maybe_known_hops.is_some(),
-            is_circular_request,
-        ) {
-            PathRequestRoute::LocalDestinationResponse => {
+            PathRequestStateObservation {
+                entry_received_from: maybe_entry.map(|entry| entry.received_from),
+                known_hops: maybe_known_hops,
+            },
+        );
+        match decide_path_request_action_from_input(input) {
+            PathRequestAction::LocalDestinationResponse { ingress_iface } => {
                 if let Some(dest) = maybe_local_dest {
                     let response = dest
                         .lock()
@@ -927,7 +939,7 @@ async fn handle_path_request<'a>(
 
                     handler
                         .send(TxMessage {
-                            tx_type: TxMessageType::Direct(iface),
+                            tx_type: TxMessageType::Direct(ingress_iface),
                             packet: response,
                         })
                         .await;
@@ -935,41 +947,46 @@ async fn handle_path_request<'a>(
                     log::trace!(
                         "tp({}): send direct path response over {}",
                         handler.config.name,
-                        iface
+                        ingress_iface
                     );
                 }
             }
-            PathRequestRoute::ScheduleRemoteResponse => {
-                if let Some(hops) = maybe_known_hops {
-                    handler
-                        .announce_table
-                        .add_response(request.destination, iface, hops);
+            PathRequestAction::ScheduleRemoteResponse {
+                destination,
+                ingress_iface,
+                hops,
+            } => {
+                handler
+                    .announce_table
+                    .add_response(destination, ingress_iface, hops);
 
-                    log::trace!(
-                        "tp({}): scheduled remote path response to {} ({} hops) over {}",
-                        handler.config.name,
-                        request.destination,
-                        hops,
-                        iface
-                    );
-                }
+                log::trace!(
+                    "tp({}): scheduled remote path response to {} ({} hops) over {}",
+                    handler.config.name,
+                    destination,
+                    hops,
+                    ingress_iface
+                );
             }
-            PathRequestRoute::DropCircular => {
+            PathRequestAction::DropCircular { destination } => {
                 log::trace!(
                     "tp({}): dropping circular path request from {}",
                     handler.config.name,
-                    request.destination
+                    destination
                 );
             }
-            PathRequestRoute::RecursiveBroadcast => {
+            PathRequestAction::RecursiveBroadcast {
+                destination,
+                exclude_iface,
+            } => {
                 if let Some(packet) =
                     handler
                         .path_requests
-                        .generate_recursive(&request.destination, Some(iface), None)
+                        .generate_recursive(&destination, Some(exclude_iface), None)
                 {
                     handler
                         .send(TxMessage {
-                            tx_type: TxMessageType::Broadcast(Some(iface)),
+                            tx_type: TxMessageType::Broadcast(Some(exclude_iface)),
                             packet,
                         })
                         .await;
@@ -984,12 +1001,17 @@ async fn handle_fixed_destinations<'a>(
     handler: &mut MutexGuard<'a, TransportHandler>,
     iface: AddressHash,
 ) -> bool {
-    match decide_fixed_destination_route(&packet.destination, &handler.fixed_dest_path_requests) {
-        FixedDestinationRoute::PathRequestHandler => {
-            handle_path_request(packet, handler, iface).await;
-            true
-        }
-        FixedDestinationRoute::Unhandled => false,
+    if should_handle_fixed_destination_path_request(
+        &packet.destination,
+        &handler.fixed_dest_path_requests,
+        packet.header.packet_type,
+        packet.context,
+        packet.data.as_slice(),
+    ) {
+        handle_path_request(packet, handler, iface).await;
+        true
+    } else {
+        false
     }
 }
 
@@ -1004,9 +1026,13 @@ async fn handle_link_request_as_destination<'a>(
     let link_id = LinkId::from(packet);
     let in_link_already_exists = handler.in_links.contains_key(&link_id);
 
-    match decide_in_link_registration_action(destination_requested_link_proof, in_link_already_exists)
-    {
-        InLinkRegistrationAction::CreateAndStore => {
+    match decide_link_lifecycle_transition(
+        IngressAction::LinkRequest,
+        destination_requested_link_proof,
+        in_link_already_exists,
+        in_link_already_exists,
+    ) {
+        LinkLifecycleTransition::AddPending => {
             log::trace!(
                 "tp({}): send proof to {}",
                 handler.config.name,
@@ -1035,7 +1061,7 @@ async fn handle_link_request_as_destination<'a>(
                     .insert(*link.id(), Arc::new(Mutex::new(link)));
             }
         }
-        InLinkRegistrationAction::Skip => {}
+        LinkLifecycleTransition::Activate | LinkLifecycleTransition::None => {}
     }
 }
 
@@ -1295,13 +1321,12 @@ async fn manage_transport(
                         ).await;
 
                         let duplicate_outcome = handler.filter_duplicate_packets(&packet).await;
-                        let is_duplicate = duplicate_outcome == DuplicateOutcome::DropDuplicate;
-                        let decision = decide_ingress(
-                            packet.header.packet_type,
+                        let decision = decide_ingress_from_input(IngressDecisionInput {
+                            packet_type: packet.header.packet_type,
                             fixed_destination_handled,
-                            is_duplicate,
-                            handler.config.broadcast,
-                        );
+                            duplicate: duplicate_outcome,
+                            broadcast_enabled: handler.config.broadcast,
+                        });
 
                         match decision {
                             IngressDecision::HandleFixedDestination(reason) => {
@@ -1502,7 +1527,7 @@ async fn manage_transport(
 mod tests {
     use super::*;
 
-    use crate::packet::HeaderType;
+    use crate::packet::{HeaderType, PacketType};
 
     #[tokio::test]
     async fn drop_duplicates() {

@@ -1,4 +1,4 @@
-//! Shared Reticulum identity beacon (same wire format for ESP-NOW and HaLow UART).
+//! Shared Reticulum identity beacon (wire format used over T-HaLow UART frames).
 
 use ed25519_dalek::Signature;
 use reticulum::hash::AddressHash;

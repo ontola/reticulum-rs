@@ -281,6 +281,92 @@ mod embedded_backend {
             }
         }
     }
+
+    /// `tokio::sync::mpsc`-shaped API, backed by an Embassy channel.
+    ///
+    /// Stage D intent:
+    /// - Keep call-sites close to std/Tokio usage while running on embedded.
+    /// - Be explicit about differences so future refactors do not assume parity.
+    ///
+    /// Important differences vs Tokio mpsc:
+    /// - Capacity argument is currently ignored; fixed `DEFAULT_CAPACITY` is used.
+    /// - Receiver `recv()` currently never returns `None` in our setup (channel is not closed),
+    ///   but returns `Option<T>` to match Tokio call-sites.
+    /// - `SendError`/`TrySendError` are minimal compatibility wrappers, not full Tokio error enums.
+    ///
+    /// This is a Stage D compatibility seam, not a full behavior clone.
+    pub mod mpsc {
+        extern crate alloc;
+
+        use alloc::boxed::Box;
+
+        use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+        use embassy_sync::channel;
+
+        const DEFAULT_CAPACITY: usize = 16;
+
+        #[derive(Clone)]
+        pub struct Sender<T: 'static> {
+            tx: channel::DynamicSender<'static, T>,
+        }
+
+        pub struct Receiver<T: 'static> {
+            rx: channel::DynamicReceiver<'static, T>,
+        }
+
+        #[derive(Debug)]
+        pub struct SendError<T>(pub T);
+
+        #[derive(Debug)]
+        pub enum TrySendError<T> {
+            Full(T),
+        }
+
+        pub fn channel<T: 'static>(_capacity: usize) -> (Sender<T>, Receiver<T>) {
+            let ch = Box::leak(Box::new(channel::Channel::<
+                CriticalSectionRawMutex,
+                T,
+                DEFAULT_CAPACITY,
+            >::new()));
+
+            (
+                Sender {
+                    tx: ch.sender().into(),
+                },
+                Receiver {
+                    rx: ch.receiver().into(),
+                },
+            )
+        }
+
+        impl<T: 'static> Sender<T> {
+            pub async fn send(&self, message: T) -> Result<(), SendError<T>> {
+                self.tx.send(message).await;
+                Ok(())
+            }
+
+            pub fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
+                match self.tx.try_send(message) {
+                    Ok(()) => Ok(()),
+                    Err(channel::TrySendError::Full(m)) => Err(TrySendError::Full(m)),
+                }
+            }
+        }
+
+        impl<T: 'static> Receiver<T> {
+            pub async fn recv(&mut self) -> Option<T> {
+                Some(self.rx.receive().await)
+            }
+        }
+
+        // Example usage (embedded):
+        //
+        // let (tx, mut rx) = mpsc::channel::<u8>(16);
+        // tx.send(1).await.ok();
+        // if let Some(v) = rx.recv().await {
+        //     // handle value
+        // }
+    }
 }
 
 #[cfg(all(not(feature = "std"), feature = "embedded"))]

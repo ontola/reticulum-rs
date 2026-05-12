@@ -3,18 +3,10 @@ name    = "hello-world"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-default = ["esp_now"]
-# Internal 2.4 GHz Wi‑Fi + ESP-NOW (generic ESP32-S3 dev boards).
-esp_now = ["dep:esp-wifi"]
-# T-HaLow (TX-AH) AT UART on GPIO4/5 — matches `halow_mesh` Arduino demo.
-halow   = []
-
 [dependencies]
 embedded-hal      = { version = "1.0", default-features = false }
 ed25519-dalek     = { version = "2.1.1", default-features = false, features = ["rand_core"] }
 embassy-executor  = { version = "0.7", features = ["task-arena-size-20480"] }
-embassy-futures   = "0.1"
 embassy-sync      = "0.6"
 embassy-time      = "0.4"
 esp-alloc         = "0.6.0"
@@ -22,7 +14,6 @@ esp-backtrace     = { version = "0.15", features = ["esp32s3", "panic-handler", 
 esp-hal           = { version = "0.23", features = ["esp32s3", "unstable"] }
 esp-hal-embassy   = { version = "0.6", features = ["esp32s3"] }
 esp-println       = { version = "0.13", features = ["esp32s3", "log"] }
-esp-wifi          = { version = "0.12.0", optional = true, features = ["esp32s3", "wifi", "esp-now"] }
 heapless          = "0.8"
 log               = "0.4"
 rand_chacha       = { version = "0.3.1", default-features = false }
@@ -34,6 +25,3 @@ lto           = "fat"
 codegen-units = 1
 opt-level     = "s"
 debug         = true
-
-[profile.dev.package.esp-wifi]
-opt-level = 3

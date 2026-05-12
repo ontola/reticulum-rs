@@ -156,6 +156,10 @@ pub mod iface;
 pub mod packet;
 #[cfg(feature = "std")]
 pub mod transport;
+#[cfg(feature = "alloc")]
+pub mod transport_engine;
+#[cfg(all(feature = "embedded", not(feature = "std"), feature = "alloc"))]
+pub mod transport_embedded;
 pub mod serde;
 #[cfg(feature = "std")]
 pub mod my_code;
