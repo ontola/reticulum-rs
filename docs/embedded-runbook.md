@@ -165,6 +165,12 @@ Host demo run (desktop):
 cargo run --target aarch64-apple-darwin --features std --bin runtime_demo
 ```
 
+Host Embassy virtual two-node demo:
+
+```sh
+cargo run --features embassy-virtual --bin embassy_virtual_demo
+```
+
 ## Why these feature settings exist
 
 - `std` feature:

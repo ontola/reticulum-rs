@@ -67,6 +67,17 @@ std = ["alloc", "dep:tokio", "dep:tokio-stream", "dep:tokio-util", "dep:env_logg
 alloc = []
 fernet-aes128 = []
 embedded = ["alloc", "dep:esp-hal", "dep:esp-hal-embassy", "dep:esp-backtrace", "dep:esp-println", "dep:embassy-executor", "dep:embassy-time", "dep:embassy-sync", "dep:futures", "dep:xtensa-lx-rt", "dep:log"]
+embassy-virtual = [
+    "std",
+    "dep:embassy-executor",
+    "dep:embassy-time",
+    "dep:embassy-sync",
+    "embassy-executor/arch-std",
+    "embassy-executor/executor-thread",
+    "embassy-executor/task-arena-size-10240",
+    "embassy-time/std",
+    "embassy-sync/std",
+]
 
 [build-dependencies]
 tonic-build = "0.13.0"
@@ -120,3 +131,8 @@ path = "examples/multihop.rs"
 name = "runtime_demo"
 path = "src/bin/runtime_demo.rs"
 required-features = ["std"]
+
+[[bin]]
+name = "embassy_virtual_demo"
+path = "src/bin/embassy_virtual_demo.rs"
+required-features = ["embassy-virtual"]
