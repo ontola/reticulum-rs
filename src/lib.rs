@@ -154,7 +154,6 @@ pub mod identity;
 #[cfg(feature = "std")]
 pub mod iface;
 pub mod packet;
-pub mod runtime;
 pub mod serde;
 #[cfg(feature = "std")]
 pub mod transport;

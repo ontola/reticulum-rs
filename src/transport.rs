@@ -3,6 +3,7 @@ use crate::async_backend::CancellationToken;
 use alloc::sync::Arc;
 use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
+use core::future::Future;
 use link_table::LinkTable;
 use packet_cache::PacketCache;
 use path_requests::PathRequests;
@@ -47,8 +48,6 @@ use crate::packet::Header;
 use crate::packet::Packet;
 use crate::packet::PacketDataBuffer;
 
-use crate::runtime::Spawner;
-use crate::runtime::TokioRuntime;
 use crate::transport_engine::{
     build_path_request_decision_input, decide_announce_discovery_route,
     decide_announce_retransmit_action, decide_duplicate_outcome, decide_ingress_from_input,
@@ -97,6 +96,19 @@ const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
 const KEEP_ALIVE_RESPONSE: u8 = 0xFE;
+
+/// Tokio-backed task adapter used by the std transport.
+#[derive(Clone)]
+pub struct TokioRuntime;
+
+impl TokioRuntime {
+    fn spawn<F>(&self, fut: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        crate::async_backend::spawn(fut);
+    }
+}
 
 #[derive(Clone)]
 pub struct ReceivedData {
