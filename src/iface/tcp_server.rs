@@ -55,10 +55,7 @@ impl TcpServer {
     ///
     /// * `addr` - The local address to bind to (e.g., "0.0.0.0:4242")
     /// * `iface_manager` - Reference to the InterfaceManager for spawning client interfaces
-    pub fn new<T: Into<String>>(
-        addr: T,
-        iface_manager: Arc<Mutex<InterfaceManager>>,
-    ) -> Self {
+    pub fn new<T: Into<String>>(addr: T, iface_manager: Arc<Mutex<InterfaceManager>>) -> Self {
         Self {
             addr: addr.into(),
             iface_manager,

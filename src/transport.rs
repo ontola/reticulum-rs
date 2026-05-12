@@ -1,3 +1,5 @@
+use crate::async_backend::time;
+use crate::async_backend::CancellationToken;
 use alloc::sync::Arc;
 use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
@@ -9,8 +11,6 @@ use path_table::PathTable;
 use rand_core::OsRng;
 use std::collections::HashMap;
 use std::time::Duration;
-use crate::async_backend::time;
-use crate::async_backend::CancellationToken;
 
 use crate::async_backend::broadcast;
 use crate::async_backend::Mutex;
@@ -47,29 +47,25 @@ use crate::packet::Header;
 use crate::packet::Packet;
 use crate::packet::PacketDataBuffer;
 
-use crate::my_code::runtime::Spawner;
-use crate::my_code::runtime_tokio::TokioRuntime;
+use crate::runtime::Spawner;
+use crate::runtime::TokioRuntime;
 use crate::transport_engine::{
-    decide_announce_discovery_route, decide_announce_retransmit_action,
-    decide_duplicate_outcome,
-    decide_ingress_from_input, decide_link_request_route,
-    decide_link_handle_followup,
-    decide_link_destination_data_route, decide_link_lifecycle_transition,
-    decide_proof_handle_followup,
-    decide_old_announce_retransmit, decide_single_data_route,
-    build_path_request_decision_input, decide_path_request_action_from_input, is_in_link_pending_proof,
-    should_handle_fixed_destination_path_request, PathRequestAction, PathRequestStateObservation,
-    should_consider_in_link_pending_proof, should_handle_keepalive_response,
-    AnnounceDiscoveryRoute, AnnounceRetransmitAction, DuplicateOutcome,
-    IngressAction, IngressDecision, IngressDecisionInput, IngressReason,
-    LinkDestinationDataRoute, LinkRequestRoute,
-    LinkLifecycleTransition, ProofHandleFollowup, SingleDataRoute, LinkHandleFollowup,
-    path_request_fixed_destination,
+    build_path_request_decision_input, decide_announce_discovery_route,
+    decide_announce_retransmit_action, decide_duplicate_outcome, decide_ingress_from_input,
+    decide_link_destination_data_route, decide_link_handle_followup,
+    decide_link_lifecycle_transition, decide_link_request_route, decide_old_announce_retransmit,
+    decide_path_request_action_from_input, decide_proof_handle_followup, decide_single_data_route,
+    is_in_link_pending_proof, path_request_fixed_destination,
+    should_consider_in_link_pending_proof, should_handle_fixed_destination_path_request,
+    should_handle_keepalive_response, AnnounceDiscoveryRoute, AnnounceRetransmitAction,
+    DuplicateOutcome, IngressAction, IngressDecision, IngressDecisionInput, IngressReason,
+    LinkDestinationDataRoute, LinkHandleFollowup, LinkLifecycleTransition, LinkRequestRoute,
+    PathRequestAction, PathRequestStateObservation, ProofHandleFollowup, SingleDataRoute,
 };
 use engine::{
-    IntermediateLinkRequestAction, InLinkMaintenanceAction, OutLinkMaintenanceAction,
     decide_in_link_maintenance_action, decide_intermediate_link_request_action,
-    decide_out_link_maintenance_action,
+    decide_out_link_maintenance_action, InLinkMaintenanceAction, IntermediateLinkRequestAction,
+    OutLinkMaintenanceAction,
 };
 
 mod announce_limits;
@@ -628,10 +624,8 @@ impl TransportHandler {
     }
 
     async fn filter_duplicate_packets(&self, packet: &Packet) -> DuplicateOutcome {
-        let should_consider = should_consider_in_link_pending_proof(
-            packet.header.packet_type,
-            packet.context,
-        );
+        let should_consider =
+            should_consider_in_link_pending_proof(packet.header.packet_type, packet.context);
 
         let destination_pending = if should_consider {
             if let Some(link) = self.in_links.get(&packet.destination) {
@@ -642,8 +636,11 @@ impl TransportHandler {
         } else {
             false
         };
-        let in_link_pending_proof =
-            is_in_link_pending_proof(packet.header.packet_type, packet.context, destination_pending);
+        let in_link_pending_proof = is_in_link_pending_proof(
+            packet.header.packet_type,
+            packet.context,
+            destination_pending,
+        );
 
         let is_new = self.packet_cache.lock().await.update(packet);
 
@@ -680,13 +677,11 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
 
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
-        let activated = matches!(link.handle_packet(packet, true), LinkHandleResult::Activated);
-        match decide_link_lifecycle_transition(
-            IngressAction::Proof,
-            false,
-            false,
-            activated,
-        ) {
+        let activated = matches!(
+            link.handle_packet(packet, true),
+            LinkHandleResult::Activated
+        );
+        match decide_link_lifecycle_transition(IngressAction::Proof, false, false, activated) {
             LinkLifecycleTransition::Activate => {
                 let rtt_packet = link.create_rtt();
                 handler.send_packet(rtt_packet).await;
@@ -838,6 +833,10 @@ async fn handle_announce<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
     iface: AddressHash,
 ) {
+    if handler.has_destination(&packet.destination) {
+        return;
+    }
+
     if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
         log::info!(
             "tp({}): too many announces from {}, blocked for {} seconds",
@@ -913,7 +912,10 @@ async fn handle_path_request<'a>(
     iface: AddressHash,
 ) {
     if let Some(request) = handler.path_requests.decode(packet.data.as_slice()) {
-        let maybe_local_dest = handler.single_in_destinations.get(&request.destination).cloned();
+        let maybe_local_dest = handler
+            .single_in_destinations
+            .get(&request.destination)
+            .cloned();
         let maybe_entry = handler.path_table.get(&request.destination);
         let maybe_known_hops = maybe_entry.map(|entry| entry.hops);
 
@@ -979,11 +981,11 @@ async fn handle_path_request<'a>(
                 destination,
                 exclude_iface,
             } => {
-                if let Some(packet) =
-                    handler
-                        .path_requests
-                        .generate_recursive(&destination, Some(exclude_iface), None)
-                {
+                if let Some(packet) = handler.path_requests.generate_recursive(
+                    &destination,
+                    Some(exclude_iface),
+                    None,
+                ) {
                     handler
                         .send(TxMessage {
                             tx_type: TxMessageType::Broadcast(Some(exclude_iface)),
@@ -1021,8 +1023,10 @@ async fn handle_link_request_as_destination<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
 ) {
     let mut destination = destination.lock().await;
-    let destination_requested_link_proof =
-        matches!(destination.handle_packet(packet), DestinationHandleStatus::LinkProof);
+    let destination_requested_link_proof = matches!(
+        destination.handle_packet(packet),
+        DestinationHandleStatus::LinkProof
+    );
     let link_id = LinkId::from(packet);
     let in_link_already_exists = handler.in_links.contains_key(&link_id);
 
@@ -1505,6 +1509,8 @@ async fn manage_transport(
                         break;
                     },
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
+                        let mut retransmit_old = false;
+
                         if let Some(instant) = last_retransmit_old {
                             let now = time::Instant::now();
                             let elapsed = now - instant;
@@ -1512,10 +1518,12 @@ async fn manage_transport(
                                 elapsed,
                                 INTERVAL_OLD_ANNOUNCES_RETRANSMIT,
                             ) {
-                                retransmit_announces(handler.lock().await, true).await;
+                                retransmit_old = true;
                                 last_retransmit_old = Some(now);
                             }
                         }
+
+                        retransmit_announces(handler.lock().await, retransmit_old).await;
                     }
                 }
             }

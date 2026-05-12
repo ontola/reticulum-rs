@@ -8,14 +8,14 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+#[cfg(feature = "std")]
+use crate::destination::link::LinkHandleResult;
 use crate::destination::{DestinationName, PlainInputDestination};
 use crate::hash::{AddressHash, Hash};
 use crate::identity::{EmptyIdentity, PUBLIC_KEY_LENGTH};
 use crate::packet::{Header, HeaderType, IfacFlag, Packet, PacketContext, PacketType};
 use core::time::Duration;
 use sha2::Digest;
-#[cfg(feature = "std")]
-use crate::destination::link::LinkHandleResult;
 
 /// Runtime-agnostic action chosen for packet ingress dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,12 +199,10 @@ pub fn path_cache_lookup_next_hop(
 pub fn build_packet_forward_type2(original: &Packet, next_hop: AddressHash) -> Packet {
     Packet {
         header: Header {
-            ifac_flag: IfacFlag::Authenticated,
+            ifac_flag: IfacFlag::Open,
             header_type: HeaderType::Type2,
-            propagation_type: original.header.propagation_type,
-            destination_type: original.header.destination_type,
-            packet_type: original.header.packet_type,
             hops: original.header.hops.saturating_add(1),
+            ..original.header
         },
         ifac: None,
         destination: original.destination,
@@ -284,15 +282,16 @@ pub fn try_register_intermediate_link_entry(
 }
 
 /// Build the propagated proof packet (std `send_backwards` in `link_table.rs`).
-pub fn build_link_proof_propagation_packet(packet: &Packet, transport_next_hop: AddressHash) -> Packet {
+pub fn build_link_proof_propagation_packet(
+    packet: &Packet,
+    transport_next_hop: AddressHash,
+) -> Packet {
     Packet {
         header: Header {
-            ifac_flag: IfacFlag::Authenticated,
+            ifac_flag: IfacFlag::Open,
             header_type: HeaderType::Type2,
-            propagation_type: packet.header.propagation_type,
-            destination_type: packet.header.destination_type,
-            packet_type: packet.header.packet_type,
             hops: packet.header.hops.saturating_add(1),
+            ..packet.header
         },
         ifac: None,
         destination: packet.destination,
@@ -384,7 +383,9 @@ pub enum PathRequestExecutionIntent {
 /// Shared action shape for path-request handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathRequestAction {
-    LocalDestinationResponse { ingress_iface: AddressHash },
+    LocalDestinationResponse {
+        ingress_iface: AddressHash,
+    },
     ScheduleRemoteResponse {
         destination: AddressHash,
         ingress_iface: AddressHash,
@@ -394,7 +395,9 @@ pub enum PathRequestAction {
         destination: AddressHash,
         exclude_iface: AddressHash,
     },
-    DropCircular { destination: AddressHash },
+    DropCircular {
+        destination: AddressHash,
+    },
 }
 
 /// Shared helper for extracting recursive-broadcast egress iface from action.
@@ -418,7 +421,8 @@ pub fn decide_staged_path_request_egress(
 ) -> StagedPathRequestEgressDecision {
     if let Some(exclude_iface) = recursive_broadcast_exclude_iface(action) {
         StagedPathRequestEgressDecision::EmitRecursive { exclude_iface }
-    } else if matches!(action, PathRequestAction::ScheduleRemoteResponse { .. }) && announce_triggered
+    } else if matches!(action, PathRequestAction::ScheduleRemoteResponse { .. })
+        && announce_triggered
     {
         StagedPathRequestEgressDecision::CountOnly
     } else {
@@ -601,11 +605,9 @@ pub fn decide_path_request_action(
             destination: request_destination,
             exclude_iface: ingress_iface,
         },
-        PathRequestExecutionIntent::DropCircular => {
-            PathRequestAction::DropCircular {
-                destination: request_destination,
-            }
-        }
+        PathRequestExecutionIntent::DropCircular => PathRequestAction::DropCircular {
+            destination: request_destination,
+        },
     }
 }
 
@@ -622,8 +624,7 @@ pub fn decide_path_request_action_from_state(
     retransmit_enabled: bool,
     known_hops: Option<u8>,
 ) -> PathRequestAction {
-    let is_circular_request =
-        is_circular_path_request(requesting_transport, entry_received_from);
+    let is_circular_request = is_circular_path_request(requesting_transport, entry_received_from);
     decide_path_request_action(
         request_destination,
         ingress_iface,
@@ -698,9 +699,7 @@ pub fn allow_duplicate_packet(
         PacketType::Announce => true,
         PacketType::LinkRequest => true,
         PacketType::Data => context == PacketContext::KeepAlive,
-        PacketType::Proof => {
-            context == PacketContext::LinkRequestProof && in_link_pending_proof
-        }
+        PacketType::Proof => context == PacketContext::LinkRequestProof && in_link_pending_proof,
     }
 }
 
@@ -952,7 +951,10 @@ mod tests {
             PacketType::LinkRequest,
             false
         ));
-        assert!(!link_request_destination_requests_proof(PacketType::Data, true));
+        assert!(!link_request_destination_requests_proof(
+            PacketType::Data,
+            true
+        ));
     }
 
     #[test]

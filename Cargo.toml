@@ -117,6 +117,6 @@ name = "multihop"
 path = "examples/multihop.rs"
 
 [[bin]]
-name = "my_code_demo"
-path = "src/bin/my_code_demo.rs"
+name = "runtime_demo"
+path = "src/bin/runtime_demo.rs"
 required-features = ["std"]

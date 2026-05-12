@@ -162,7 +162,7 @@ cargo check --lib --no-default-features --features alloc
 Host demo run (desktop):
 
 ```sh
-cargo run --target aarch64-apple-darwin --features std --bin my_code_demo
+cargo run --target aarch64-apple-darwin --features std --bin runtime_demo
 ```
 
 ## Why these feature settings exist

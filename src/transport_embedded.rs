@@ -15,36 +15,19 @@ use crate::hash::AddressHash;
 use crate::iface_messages::{RxMessage, TxMessage, TxMessageType};
 use crate::packet::{DestinationType, Packet, PacketDataBuffer, PacketType};
 use crate::transport_engine::{
-    build_packet_forward_type2,
-    build_path_request_decision_input,
-    decide_intermediate_link_request_action,
-    decide_link_lifecycle_transition,
-    decide_link_request_route,
-    decide_proof_handle_followup,
-    intermediate_link_table_apply_proof,
-    intermediate_link_table_handle_keepalive,
-    link_request_destination_requests_proof,
-    decide_path_request_action_from_input, decide_duplicate_outcome, decide_ingress_from_input,
-    decide_single_data_route,
-    decide_staged_path_request_egress,
-    is_path_request_packet,
-    lookup_path_request_state,
-    path_cache_lookup_next_hop,
-    path_request_fixed_destination, is_in_link_pending_proof, should_consider_in_link_pending_proof,
-    should_handle_fixed_destination_path_request,
-    should_handle_keepalive_response,
-    IngressAction, IngressDecision,
-    IngressDecisionInput,
-    IntermediateLinkRequestAction,
-    LinkLifecycleTransition,
-    LinkRequestRoute,
-    PathRequestAction,
-    ProofHandleFollowup,
-    SingleDataRoute,
-    StagedPathRequestEgressDecision,
-    try_register_intermediate_link_entry,
-    IntermediateLinkEntry,
-    STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
+    build_packet_forward_type2, build_path_request_decision_input, decide_duplicate_outcome,
+    decide_ingress_from_input, decide_intermediate_link_request_action,
+    decide_link_lifecycle_transition, decide_link_request_route,
+    decide_path_request_action_from_input, decide_proof_handle_followup, decide_single_data_route,
+    decide_staged_path_request_egress, intermediate_link_table_apply_proof,
+    intermediate_link_table_handle_keepalive, is_in_link_pending_proof, is_path_request_packet,
+    link_request_destination_requests_proof, lookup_path_request_state, path_cache_lookup_next_hop,
+    path_request_fixed_destination, should_consider_in_link_pending_proof,
+    should_handle_fixed_destination_path_request, should_handle_keepalive_response,
+    try_register_intermediate_link_entry, IngressAction, IngressDecision, IngressDecisionInput,
+    IntermediateLinkEntry, IntermediateLinkRequestAction, LinkLifecycleTransition,
+    LinkRequestRoute, PathRequestAction, ProofHandleFollowup, SingleDataRoute,
+    StagedPathRequestEgressDecision, STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
 };
 
 /// Queue a Type2 forward on `egress_tx`, matching std `PathTable::handle_inbound_packet` + `Direct(iface)`.
@@ -98,9 +81,7 @@ fn queue_prepared_direct(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedCommand {
     /// Request that the runner emits a small egress probe packet.
-    EmitProbe {
-        destination: AddressHash,
-    },
+    EmitProbe { destination: AddressHash },
     /// Enable/disable automatic probe emission when announce ingress is observed.
     SetAutoProbeOnIngressAnnounce(bool),
     /// Emit a synthetic packet with explicit packet type/payload for staged runner validation.
@@ -287,14 +268,10 @@ impl EmbeddedTransport {
             broadcast::Sender<RxMessage>,
             broadcast::Receiver<RxMessage>,
         ) = broadcast::channel(config.channel_capacity);
-        let (ingress_events_tx, _): (
-            broadcast::Sender<RxMessage>,
-            broadcast::Receiver<RxMessage>,
-        ) = broadcast::channel(config.channel_capacity);
-        let (egress_tx, _): (
-            broadcast::Sender<TxMessage>,
-            broadcast::Receiver<TxMessage>,
-        ) = broadcast::channel(config.channel_capacity);
+        let (ingress_events_tx, _): (broadcast::Sender<RxMessage>, broadcast::Receiver<RxMessage>) =
+            broadcast::channel(config.channel_capacity);
+        let (egress_tx, _): (broadcast::Sender<TxMessage>, broadcast::Receiver<TxMessage>) =
+            broadcast::channel(config.channel_capacity);
         let (command_tx, command_rx): (
             broadcast::Sender<EmbeddedCommand>,
             broadcast::Receiver<EmbeddedCommand>,
@@ -346,7 +323,8 @@ impl EmbeddedTransport {
             let data_forward_queued_count = data_forward_queued_count.clone();
             let link_request_forward_queued_count = link_request_forward_queued_count.clone();
             let intermediate_link_insert_count = intermediate_link_insert_count.clone();
-            let intermediate_link_duplicate_skip_count = intermediate_link_duplicate_skip_count.clone();
+            let intermediate_link_duplicate_skip_count =
+                intermediate_link_duplicate_skip_count.clone();
             let link_proof_propagate_queued_count = link_proof_propagate_queued_count.clone();
             let link_keepalive_propagate_queued_count =
                 link_keepalive_propagate_queued_count.clone();
@@ -413,9 +391,9 @@ impl EmbeddedTransport {
                         };
                         if event_tx
                             .send(EmbeddedEvent::IngressClassified {
-                            source,
-                            packet_type: msg.packet.header.packet_type,
-                            destination: msg.packet.destination,
+                                source,
+                                packet_type: msg.packet.header.packet_type,
+                                destination: msg.packet.destination,
                             })
                             .is_err()
                         {
@@ -462,48 +440,47 @@ impl EmbeddedTransport {
                             duplicate,
                             broadcast_enabled,
                         });
-                        let emit_recursive_path_request = |
-                            exclude_iface: AddressHash,
-                            destination: AddressHash,
-                            emit_announce_event: bool,
-                        | {
-                            let mut packet = Packet::default();
-                            packet.header.packet_type = PacketType::Data;
-                            packet.destination = destination;
-                            packet.context = crate::packet::PacketContext::Request;
-                            packet.data = PacketDataBuffer::new_from_slice(
-                                STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
-                            );
-                            if egress_tx
-                                .send(TxMessage {
-                                tx_type: TxMessageType::Broadcast(Some(exclude_iface)),
-                                packet,
-                                })
-                                .is_err()
-                            {
-                                egress_dropped_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                            egress_generated_count.fetch_add(1, Ordering::Relaxed);
-                            if event_tx
-                                .send(EmbeddedEvent::EgressGenerated {
-                                    destination,
-                                    bytes: STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD.len(),
-                                })
-                                .is_err()
-                            {
-                                event_dropped_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                            if emit_announce_event
-                                && event_tx
-                                    .send(EmbeddedEvent::AnnounceTriggeredPathRequest {
+                        let emit_recursive_path_request =
+                            |exclude_iface: AddressHash,
+                             destination: AddressHash,
+                             emit_announce_event: bool| {
+                                let mut packet = Packet::default();
+                                packet.header.packet_type = PacketType::Data;
+                                packet.destination = destination;
+                                packet.context = crate::packet::PacketContext::Request;
+                                packet.data = PacketDataBuffer::new_from_slice(
+                                    STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
+                                );
+                                if egress_tx
+                                    .send(TxMessage {
+                                        tx_type: TxMessageType::Broadcast(Some(exclude_iface)),
+                                        packet,
+                                    })
+                                    .is_err()
+                                {
+                                    egress_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                                egress_generated_count.fetch_add(1, Ordering::Relaxed);
+                                if event_tx
+                                    .send(EmbeddedEvent::EgressGenerated {
                                         destination,
                                         bytes: STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD.len(),
                                     })
                                     .is_err()
-                            {
-                                event_dropped_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                        };
+                                {
+                                    event_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                                if emit_announce_event
+                                    && event_tx
+                                        .send(EmbeddedEvent::AnnounceTriggeredPathRequest {
+                                            destination,
+                                            bytes: STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD.len(),
+                                        })
+                                        .is_err()
+                                {
+                                    event_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                            };
                         let build_path_request_input = || {
                             let state = lookup_path_request_state(
                                 msg.packet.destination,
@@ -522,74 +499,78 @@ impl EmbeddedTransport {
                                 state,
                             )
                         };
-                        let handle_path_request_action = |
-                            action: PathRequestAction,
-                            destination: AddressHash,
-                            announce_triggered: bool,
-                        | {
-                            match decide_staged_path_request_egress(action, announce_triggered) {
-                                StagedPathRequestEgressDecision::EmitRecursive {
-                                    exclude_iface,
-                                } => {
-                                    emit_recursive_path_request(
+                        let handle_path_request_action =
+                            |action: PathRequestAction,
+                             destination: AddressHash,
+                             announce_triggered: bool| {
+                                match decide_staged_path_request_egress(action, announce_triggered)
+                                {
+                                    StagedPathRequestEgressDecision::EmitRecursive {
                                         exclude_iface,
-                                        destination,
-                                        announce_triggered,
-                                    );
-                                }
-                                StagedPathRequestEgressDecision::CountOnly => {
-                                    // Mirror std policy branch: no recursive egress emission here.
-                                    path_request_count.fetch_add(1, Ordering::Relaxed);
-                                }
-                                StagedPathRequestEgressDecision::None => {}
-                            }
-                        };
-                        let execute_path_request_for_current_packet =
-                            |announce_triggered: bool| {
-                                let input = build_path_request_input();
-                                let action = decide_path_request_action_from_input(input);
-                                handle_path_request_action(
-                                    action,
-                                    msg.packet.destination,
-                                    announce_triggered,
-                                );
-                            };
-                        let execute_link_lifecycle_transition = |
-                            pending_links: &mut Vec<AddressHash>,
-                            destination: AddressHash,
-                            transition: LinkLifecycleTransition,
-                        | {
-                            match transition {
-                                LinkLifecycleTransition::AddPending => {
-                                    pending_links.push(destination);
-                                    link_pending_count
-                                        .store(pending_links.len() as u32, Ordering::Relaxed);
-                                    if event_tx
-                                        .send(EmbeddedEvent::LinkLifecyclePending { destination })
-                                        .is_err()
-                                    {
-                                        event_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                    } => {
+                                        emit_recursive_path_request(
+                                            exclude_iface,
+                                            destination,
+                                            announce_triggered,
+                                        );
                                     }
+                                    StagedPathRequestEgressDecision::CountOnly => {
+                                        // Mirror std policy branch: no recursive egress emission here.
+                                        path_request_count.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    StagedPathRequestEgressDecision::None => {}
                                 }
-                                LinkLifecycleTransition::Activate => {
-                                    if let Some(pos) =
-                                        pending_links.iter().position(|d| *d == destination)
-                                    {
-                                        pending_links.swap_remove(pos);
+                            };
+                        let execute_path_request_for_current_packet = |announce_triggered: bool| {
+                            let input = build_path_request_input();
+                            let action = decide_path_request_action_from_input(input);
+                            handle_path_request_action(
+                                action,
+                                msg.packet.destination,
+                                announce_triggered,
+                            );
+                        };
+                        let execute_link_lifecycle_transition =
+                            |pending_links: &mut Vec<AddressHash>,
+                             destination: AddressHash,
+                             transition: LinkLifecycleTransition| {
+                                match transition {
+                                    LinkLifecycleTransition::AddPending => {
+                                        pending_links.push(destination);
                                         link_pending_count
                                             .store(pending_links.len() as u32, Ordering::Relaxed);
+                                        if event_tx
+                                            .send(EmbeddedEvent::LinkLifecyclePending {
+                                                destination,
+                                            })
+                                            .is_err()
+                                        {
+                                            event_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                        }
                                     }
-                                    link_activated_count.fetch_add(1, Ordering::Relaxed);
-                                    if event_tx
-                                        .send(EmbeddedEvent::LinkLifecycleActivated { destination })
-                                        .is_err()
-                                    {
-                                        event_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                    LinkLifecycleTransition::Activate => {
+                                        if let Some(pos) =
+                                            pending_links.iter().position(|d| *d == destination)
+                                        {
+                                            pending_links.swap_remove(pos);
+                                            link_pending_count.store(
+                                                pending_links.len() as u32,
+                                                Ordering::Relaxed,
+                                            );
+                                        }
+                                        link_activated_count.fetch_add(1, Ordering::Relaxed);
+                                        if event_tx
+                                            .send(EmbeddedEvent::LinkLifecycleActivated {
+                                                destination,
+                                            })
+                                            .is_err()
+                                        {
+                                            event_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                        }
                                     }
+                                    LinkLifecycleTransition::None => {}
                                 }
-                                LinkLifecycleTransition::None => {}
-                            }
-                        };
+                            };
                         match ingress {
                             IngressDecision::Dispatch {
                                 action: IngressAction::Announce,
@@ -612,7 +593,8 @@ impl EmbeddedTransport {
                                 ) {
                                     path_request_count.fetch_add(1, Ordering::Relaxed);
                                     execute_path_request_for_current_packet(false);
-                                } else if msg.packet.header.destination_type == DestinationType::Single
+                                } else if msg.packet.header.destination_type
+                                    == DestinationType::Single
                                 {
                                     // Mirrors std `handle_data` for [`DestinationType::Single`] (not Link/Plain/Group).
                                     let has_local_destination = local_address
@@ -626,7 +608,8 @@ impl EmbeddedTransport {
                                     let mut forward_queued = false;
                                     match route {
                                         SingleDataRoute::DeliverLocal => {
-                                            data_deliver_local_count.fetch_add(1, Ordering::Relaxed);
+                                            data_deliver_local_count
+                                                .fetch_add(1, Ordering::Relaxed);
                                         }
                                         SingleDataRoute::Forward => {
                                             data_forward_candidate_count
@@ -658,11 +641,15 @@ impl EmbeddedTransport {
                                     {
                                         event_dropped_count.fetch_add(1, Ordering::Relaxed);
                                     }
-                                } else if msg.packet.header.destination_type == DestinationType::Link {
+                                } else if msg.packet.header.destination_type
+                                    == DestinationType::Link
+                                {
                                     // Std `handle_keepalive_response` + `link_table.handle_keepalive` path.
                                     let first_byte = msg.packet.data.as_slice().first().copied();
-                                    if should_handle_keepalive_response(msg.packet.context, first_byte)
-                                    {
+                                    if should_handle_keepalive_response(
+                                        msg.packet.context,
+                                        first_byte,
+                                    ) {
                                         let maybe_ka = intermediate_link_table_handle_keepalive(
                                             intermediate_links.as_slice(),
                                             &msg.packet,
@@ -698,13 +685,11 @@ impl EmbeddedTransport {
                                     msg.packet.destination,
                                 );
                                 let has_next_hop = maybe_next_hop.is_some();
-                                match decide_link_request_route(
-                                    has_local_destination,
-                                    has_next_hop,
-                                ) {
+                                match decide_link_request_route(has_local_destination, has_next_hop)
+                                {
                                     LinkRequestRoute::LocalDestination => {
-                                        let in_link_already_exists = pending_links
-                                            .contains(&msg.packet.destination);
+                                        let in_link_already_exists =
+                                            pending_links.contains(&msg.packet.destination);
                                         let proof_requested =
                                             link_request_destination_requests_proof(
                                                 msg.packet.header.packet_type,
@@ -734,15 +719,16 @@ impl EmbeddedTransport {
                                             == IntermediateLinkRequestAction::AddLinkTableAndForward
                                         {
                                             if let Some(nh) = maybe_next_hop {
-                                                link_table_inserted = try_register_intermediate_link_entry(
-                                                    &mut intermediate_links,
-                                                    intermediate_link_table_size,
-                                                    &msg.packet,
-                                                    msg.packet.destination,
-                                                    source_address,
-                                                    nh,
-                                                    source_address,
-                                                );
+                                                link_table_inserted =
+                                                    try_register_intermediate_link_entry(
+                                                        &mut intermediate_links,
+                                                        intermediate_link_table_size,
+                                                        &msg.packet,
+                                                        msg.packet.destination,
+                                                        source_address,
+                                                        nh,
+                                                        source_address,
+                                                    );
                                                 if link_table_inserted {
                                                     intermediate_link_insert_count
                                                         .fetch_add(1, Ordering::Relaxed);
@@ -877,8 +863,8 @@ impl EmbeddedTransport {
                                 );
                                 if egress_tx
                                     .send(TxMessage {
-                                    tx_type: TxMessageType::Broadcast(None),
-                                    packet,
+                                        tx_type: TxMessageType::Broadcast(None),
+                                        packet,
                                     })
                                     .is_err()
                                 {
@@ -915,8 +901,8 @@ impl EmbeddedTransport {
                                 packet.data = PacketDataBuffer::new_from_slice(payload);
                                 if egress_tx
                                     .send(TxMessage {
-                                    tx_type: TxMessageType::Broadcast(None),
-                                    packet,
+                                        tx_type: TxMessageType::Broadcast(None),
+                                        packet,
                                     })
                                     .is_err()
                                 {
@@ -1214,7 +1200,8 @@ impl EmbeddedTransport {
 
     /// Intermediate `LinkRequest` packets for which a Type2 forward was queued.
     pub fn link_request_forward_queued_count(&self) -> u32 {
-        self.link_request_forward_queued_count.load(Ordering::Relaxed)
+        self.link_request_forward_queued_count
+            .load(Ordering::Relaxed)
     }
 
     pub fn intermediate_link_insert_count(&self) -> u32 {
@@ -1222,15 +1209,18 @@ impl EmbeddedTransport {
     }
 
     pub fn intermediate_link_duplicate_skip_count(&self) -> u32 {
-        self.intermediate_link_duplicate_skip_count.load(Ordering::Relaxed)
+        self.intermediate_link_duplicate_skip_count
+            .load(Ordering::Relaxed)
     }
 
     pub fn link_proof_propagate_queued_count(&self) -> u32 {
-        self.link_proof_propagate_queued_count.load(Ordering::Relaxed)
+        self.link_proof_propagate_queued_count
+            .load(Ordering::Relaxed)
     }
 
     pub fn link_keepalive_propagate_queued_count(&self) -> u32 {
-        self.link_keepalive_propagate_queued_count.load(Ordering::Relaxed)
+        self.link_keepalive_propagate_queued_count
+            .load(Ordering::Relaxed)
     }
 
     /// Return `(announce_count, data_count)` in one call.
@@ -1272,8 +1262,7 @@ impl EmbeddedTransport {
             intermediate_link_insert_count: self.intermediate_link_insert_count(),
             intermediate_link_duplicate_skip_count: self.intermediate_link_duplicate_skip_count(),
             link_proof_propagate_queued_count: self.link_proof_propagate_queued_count(),
-            link_keepalive_propagate_queued_count: self
-                .link_keepalive_propagate_queued_count(),
+            link_keepalive_propagate_queued_count: self.link_keepalive_propagate_queued_count(),
             egress_generated_count: self.egress_generated_count(),
             egress_dropped_count: self.egress_dropped_count(),
             event_dropped_count: self.event_dropped_count(),

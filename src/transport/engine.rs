@@ -5,33 +5,26 @@ use core::time::Duration;
 // Compatibility re-exports: canonical policy now lives in `transport_engine`.
 #[allow(unused_imports)]
 pub use crate::transport_engine::{
-    allow_duplicate_packet, build_path_request_decision_input, classify_keepalive_byte, decide_announce_discovery_route,
-    decide_announce_retransmit_action, decide_fixed_destination_route, decide_ingress,
-    decide_link_lifecycle_transition,
-    decide_in_link_registration_action, decide_intermediate_link_request_action,
-    decide_link_destination_data_route, decide_link_request_route, decide_old_announce_retransmit,
-    decide_path_request_action, decide_path_request_action_from_state,
-    decide_path_request_action_from_input,
-    decide_staged_path_request_egress,
-    lookup_path_request_state,
-    recursive_broadcast_exclude_iface,
-    decide_path_request_execution_intent, decide_path_request_route,
-    decide_proof_handle_followup, decide_proof_link_followup,
-    decide_single_data_route, decide_duplicate_outcome, decide_ingress_from_duplicate_outcome,
-    decide_ingress_from_input, decide_ingress_with_duplicate_policy, duplicate_outcome,
-    is_circular_path_request, is_path_request_packet,
-    path_request_fixed_destination,
-    is_in_link_pending_proof,
-    should_handle_fixed_destination_path_request,
-    should_consider_in_link_pending_proof, should_handle_keepalive_response, AnnounceDiscoveryRoute,
-    AnnounceRetransmitAction, DuplicateOutcome, FixedDestinationRoute, IngressAction,
-    IngressDecision, IngressDecisionInput, IngressReason, KeepAliveKind,
-    InLinkRegistrationAction, IntermediateLinkRequestAction, LinkDestinationDataRoute, LinkLifecycleTransition, LinkRequestRoute,
-    PathRequestAction, PathRequestDecisionInput, PathRequestStateObservation,
-    PathRequestExecutionIntent, PathRequestRoute, ProofHandleFollowup, ProofLinkFollowup,
-    StagedPathRequestEgressDecision,
-    SingleDataRoute,
-    STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
+    allow_duplicate_packet, build_path_request_decision_input, classify_keepalive_byte,
+    decide_announce_discovery_route, decide_announce_retransmit_action, decide_duplicate_outcome,
+    decide_fixed_destination_route, decide_in_link_registration_action, decide_ingress,
+    decide_ingress_from_duplicate_outcome, decide_ingress_from_input,
+    decide_ingress_with_duplicate_policy, decide_intermediate_link_request_action,
+    decide_link_destination_data_route, decide_link_lifecycle_transition,
+    decide_link_request_route, decide_old_announce_retransmit, decide_path_request_action,
+    decide_path_request_action_from_input, decide_path_request_action_from_state,
+    decide_path_request_execution_intent, decide_path_request_route, decide_proof_handle_followup,
+    decide_proof_link_followup, decide_single_data_route, decide_staged_path_request_egress,
+    duplicate_outcome, is_circular_path_request, is_in_link_pending_proof, is_path_request_packet,
+    lookup_path_request_state, path_request_fixed_destination, recursive_broadcast_exclude_iface,
+    should_consider_in_link_pending_proof, should_handle_fixed_destination_path_request,
+    should_handle_keepalive_response, AnnounceDiscoveryRoute, AnnounceRetransmitAction,
+    DuplicateOutcome, FixedDestinationRoute, InLinkRegistrationAction, IngressAction,
+    IngressDecision, IngressDecisionInput, IngressReason, IntermediateLinkRequestAction,
+    KeepAliveKind, LinkDestinationDataRoute, LinkLifecycleTransition, LinkRequestRoute,
+    PathRequestAction, PathRequestDecisionInput, PathRequestExecutionIntent, PathRequestRoute,
+    PathRequestStateObservation, ProofHandleFollowup, ProofLinkFollowup, SingleDataRoute,
+    StagedPathRequestEgressDecision, STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
 };
 #[cfg(feature = "std")]
 #[allow(unused_imports)]
@@ -87,15 +80,18 @@ pub fn decide_out_link_maintenance_action(
         LinkStatus::Stale if restart_outlinks && elapsed > output_restart_after => {
             OutLinkMaintenanceAction::Restart
         }
-        LinkStatus::Stale if !restart_outlinks && elapsed > output_stale_after + output_close_after => {
+        LinkStatus::Stale
+            if !restart_outlinks && elapsed > output_stale_after + output_close_after =>
+        {
             OutLinkMaintenanceAction::TeardownAndRemove
         }
-        LinkStatus::Pending if elapsed > output_repeat_after => OutLinkMaintenanceAction::RepeatRequest,
+        LinkStatus::Pending if elapsed > output_repeat_after => {
+            OutLinkMaintenanceAction::RepeatRequest
+        }
         LinkStatus::Closed => OutLinkMaintenanceAction::CloseAndRemove,
         _ => OutLinkMaintenanceAction::NoOp,
     }
 }
-
 
 /// Runtime-agnostic classification for link data packet handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,45 +122,36 @@ pub fn classify_link_data(context: PacketContext, first_byte: Option<u8>) -> Lin
 #[cfg(test)]
 mod tests {
     use super::{
-        allow_duplicate_packet, classify_link_data, decide_ingress, duplicate_outcome,
-        decide_announce_discovery_route, decide_announce_retransmit_action,
-        decide_fixed_destination_route, decide_link_request_route, DuplicateOutcome,
-        IngressAction, IngressDecision, IngressDecisionInput, IngressReason, KeepAliveKind, LinkDataAction,
-        LinkRequestRoute, PathRequestAction, PathRequestDecisionInput,
-        PathRequestExecutionIntent, PathRequestRoute, PathRequestStateObservation, SingleDataRoute,
-        StagedPathRequestEgressDecision,
-        LinkDestinationDataRoute, AnnounceDiscoveryRoute, AnnounceRetransmitAction,
-        FixedDestinationRoute, InLinkRegistrationAction, IntermediateLinkRequestAction,
-        LinkLifecycleTransition,
-        InLinkMaintenanceAction, OutLinkMaintenanceAction,
-        decide_in_link_registration_action, decide_intermediate_link_request_action,
-        decide_link_lifecycle_transition,
-        decide_in_link_maintenance_action, decide_out_link_maintenance_action,
-        decide_link_destination_data_route, decide_path_request_action,
-        build_path_request_decision_input, decide_path_request_action_from_input,
-        decide_path_request_action_from_state,
-        decide_staged_path_request_egress, recursive_broadcast_exclude_iface,
-        lookup_path_request_state,
-        decide_path_request_execution_intent, decide_path_request_route,
-        decide_proof_link_followup, decide_proof_handle_followup, decide_single_data_route,
-        decide_link_handle_followup,
-        is_circular_path_request, ProofLinkFollowup, LinkHandleFollowup,
-        ProofHandleFollowup, STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD, path_request_fixed_destination,
-        classify_keepalive_byte, should_handle_keepalive_response,
-        should_handle_fixed_destination_path_request,
-        should_consider_in_link_pending_proof,
-        is_in_link_pending_proof,
-        decide_old_announce_retransmit,
-        is_path_request_packet,
-        decide_duplicate_outcome,
-        decide_ingress_from_duplicate_outcome,
-        decide_ingress_from_input,
-        decide_ingress_with_duplicate_policy,
+        allow_duplicate_packet, build_path_request_decision_input, classify_keepalive_byte,
+        classify_link_data, decide_announce_discovery_route, decide_announce_retransmit_action,
+        decide_duplicate_outcome, decide_fixed_destination_route,
+        decide_in_link_maintenance_action, decide_in_link_registration_action, decide_ingress,
+        decide_ingress_from_duplicate_outcome, decide_ingress_from_input,
+        decide_ingress_with_duplicate_policy, decide_intermediate_link_request_action,
+        decide_link_destination_data_route, decide_link_handle_followup,
+        decide_link_lifecycle_transition, decide_link_request_route,
+        decide_old_announce_retransmit, decide_out_link_maintenance_action,
+        decide_path_request_action, decide_path_request_action_from_input,
+        decide_path_request_action_from_state, decide_path_request_execution_intent,
+        decide_path_request_route, decide_proof_handle_followup, decide_proof_link_followup,
+        decide_single_data_route, decide_staged_path_request_egress, duplicate_outcome,
+        is_circular_path_request, is_in_link_pending_proof, is_path_request_packet,
+        lookup_path_request_state, path_request_fixed_destination,
+        recursive_broadcast_exclude_iface, should_consider_in_link_pending_proof,
+        should_handle_fixed_destination_path_request, should_handle_keepalive_response,
+        AnnounceDiscoveryRoute, AnnounceRetransmitAction, DuplicateOutcome, FixedDestinationRoute,
+        InLinkMaintenanceAction, InLinkRegistrationAction, IngressAction, IngressDecision,
+        IngressDecisionInput, IngressReason, IntermediateLinkRequestAction, KeepAliveKind,
+        LinkDataAction, LinkDestinationDataRoute, LinkHandleFollowup, LinkLifecycleTransition,
+        LinkRequestRoute, OutLinkMaintenanceAction, PathRequestAction, PathRequestDecisionInput,
+        PathRequestExecutionIntent, PathRequestRoute, PathRequestStateObservation,
+        ProofHandleFollowup, ProofLinkFollowup, SingleDataRoute, StagedPathRequestEgressDecision,
+        STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
     };
+    use crate::destination::link::LinkHandleResult;
+    use crate::destination::link::LinkStatus;
     use crate::hash::AddressHash;
     use crate::packet::{Packet, PacketContext, PacketType};
-    use crate::destination::link::LinkStatus;
-    use crate::destination::link::LinkHandleResult;
     use core::time::Duration;
 
     #[test]
@@ -536,7 +523,9 @@ mod tests {
         let iface = AddressHash::new([6u8; 16]);
         assert_eq!(
             decide_path_request_action(destination, iface, true, true, Some(2), false),
-            PathRequestAction::LocalDestinationResponse { ingress_iface: iface }
+            PathRequestAction::LocalDestinationResponse {
+                ingress_iface: iface
+            }
         );
         assert_eq!(
             decide_path_request_action(destination, iface, false, true, Some(4), false),
@@ -643,7 +632,10 @@ mod tests {
         );
         assert_eq!(input.request_destination, destination);
         assert_eq!(input.ingress_iface, iface);
-        assert_eq!(input.requesting_transport, Some(AddressHash::new([4u8; 16])));
+        assert_eq!(
+            input.requesting_transport,
+            Some(AddressHash::new([4u8; 16]))
+        );
         assert_eq!(input.entry_received_from, observation.entry_received_from);
         assert_eq!(input.has_local_destination, true);
         assert_eq!(input.retransmit_enabled, false);
@@ -793,14 +785,8 @@ mod tests {
 
     #[test]
     fn proof_link_followup_decision() {
-        assert_eq!(
-            decide_proof_link_followup(true),
-            ProofLinkFollowup::SendRtt
-        );
-        assert_eq!(
-            decide_proof_link_followup(false),
-            ProofLinkFollowup::NoOp
-        );
+        assert_eq!(decide_proof_link_followup(true), ProofLinkFollowup::SendRtt);
+        assert_eq!(decide_proof_link_followup(false), ProofLinkFollowup::NoOp);
     }
 
     #[test]

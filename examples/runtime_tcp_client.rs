@@ -4,15 +4,13 @@ use rand_core::OsRng;
 use reticulum::destination::{DestinationName, SingleInputDestination};
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
+use reticulum::runtime::{Runtime, TokioRuntime};
 use reticulum::transport::{Transport, TransportConfig};
-use reticulum::my_code::runtime::Runtime;
-use reticulum::my_code::runtime_tokio::TokioRuntime;
 
-async fn run<R: Runtime>(rt: R)
-{
+async fn run<R: Runtime>(rt: R) {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
-    log::info!(">>> TCP CLIENT APP (my_code runtime) <<<");
+    log::info!(">>> TCP CLIENT APP (runtime abstraction) <<<");
 
     let transport = Transport::new(TransportConfig::default());
 
@@ -38,9 +36,7 @@ async fn run<R: Runtime>(rt: R)
 }
 
 #[tokio::main]
-async fn main()
-{
+async fn main() {
     let rt = TokioRuntime;
     run(rt).await;
 }
-

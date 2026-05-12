@@ -168,7 +168,9 @@ mod embedded_backend {
         unsafe {
             SPAWNER
                 .as_ref()
-                .expect("reticulum: async_backend::set_spawner must be called before spawn on embedded")
+                .expect(
+                    "reticulum: async_backend::set_spawner must be called before spawn on embedded",
+                )
                 .spawn(token)
                 .expect("reticulum: embassy_executor::Spawner::spawn failed");
         }
@@ -371,4 +373,3 @@ mod embedded_backend {
 
 #[cfg(all(not(feature = "std"), feature = "embedded"))]
 pub use embedded_backend::*;
-

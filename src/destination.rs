@@ -523,8 +523,21 @@ impl Destination<PrivateIdentity, Input, Single> {
     ) -> Result<Packet, RnsError> {
         let mut packet_data = PacketDataBuffer::new();
 
-        let rand_hash = Hash::new_from_rand(rng);
-        let rand_hash = &rand_hash.as_slice()[..RAND_HASH_LENGTH];
+        let random_hash = Hash::new_from_rand(rng);
+        #[cfg(feature = "std")]
+        let rand_hash_storage = {
+            let timestamp =
+                (std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as u64).to_be_bytes();
+            [
+                &random_hash.as_slice()[..RAND_HASH_LENGTH / 2],
+                &timestamp[3..],
+            ]
+            .concat()
+        };
+        #[cfg(feature = "std")]
+        let rand_hash = rand_hash_storage.as_slice();
+        #[cfg(not(feature = "std"))]
+        let rand_hash = &random_hash.as_slice()[..RAND_HASH_LENGTH];
 
         let pub_key = self.identity.as_identity().public_key_bytes();
         let verifying_key = self.identity.as_identity().verifying_key_bytes();

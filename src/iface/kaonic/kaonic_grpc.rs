@@ -5,10 +5,10 @@ pub mod proto {
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::async_backend::mpsc::Receiver;
 use proto::device_client::DeviceClient;
 use proto::radio_client::RadioClient;
 use proto::RadioFrame;
-use crate::async_backend::mpsc::Receiver;
 use tokio_stream::StreamExt;
 
 use crate::async_backend::spawn;

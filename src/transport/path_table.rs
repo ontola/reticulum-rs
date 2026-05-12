@@ -202,12 +202,10 @@ impl PathTable {
         (
             Packet {
                 header: Header {
-                    ifac_flag: IfacFlag::Authenticated,
+                    ifac_flag: IfacFlag::Open,
                     header_type: HeaderType::Type2,
-                    propagation_type: original_packet.header.propagation_type,
-                    destination_type: original_packet.header.destination_type,
-                    packet_type: original_packet.header.packet_type,
                     hops: original_packet.header.hops + 1,
+                    ..original_packet.header
                 },
                 ifac: None,
                 destination: original_packet.destination,
@@ -270,12 +268,8 @@ impl PathTable {
         (
             Packet {
                 header: Header {
-                    ifac_flag: IfacFlag::Authenticated,
                     header_type: HeaderType::Type2,
-                    propagation_type: original_packet.header.propagation_type,
-                    destination_type: original_packet.header.destination_type,
-                    packet_type: original_packet.header.packet_type,
-                    hops: original_packet.header.hops,
+                    ..original_packet.header
                 },
                 ifac: original_packet.ifac,
                 destination: original_packet.destination,

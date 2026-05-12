@@ -46,8 +46,8 @@ use std::sync::Mutex as StdMutex;
 
 use crate::async_backend::mpsc;
 use crate::async_backend::spawn;
-use crate::async_backend::Mutex;
 use crate::async_backend::CancellationToken;
+use crate::async_backend::Mutex;
 use crate::hash::AddressHash;
 use crate::hash::Hash;
 
