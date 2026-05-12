@@ -17,6 +17,11 @@ This project brings Reticulum's capabilities to the Rust ecosystem, enabling emb
 constrained deployments with maximum performance and minimal dependencies.
 """
 
+[workspace]
+members = [".", "mesh-sim", "t-halow"]
+default-members = ["."]
+resolver = "2"
+
 [dependencies]
 
 # Protobuf and gRPC
@@ -53,31 +58,61 @@ env_logger = { version = "0.10", optional = true }
 # Embedded / ESP32-S3
 esp-hal = { version = "0.23", features = ["esp32s3"], optional = true }
 esp-hal-embassy = { version = "0.6", features = ["esp32s3"], optional = true }
-esp-backtrace = { version = "0.15", features = ["esp32s3", "panic-handler", "println"], optional = true }
+esp-backtrace = { version = "0.15", features = [
+  "esp32s3",
+  "panic-handler",
+  "println",
+], optional = true }
 esp-println = { version = "0.13", features = ["esp32s3", "log"], optional = true }
 embassy-executor = { version = "0.7", optional = true }
 embassy-time = { version = "0.4", optional = true }
 embassy-sync = { version = "0.8", optional = true }
-futures = { version = "0.3.30", default-features = false, features = ["async-await", "alloc"], optional = true }
+futures = { version = "0.3.30", default-features = false, features = [
+  "async-await",
+  "alloc",
+], optional = true }
 xtensa-lx-rt = { version = "0.21", optional = true }
 
 [features]
 default = []
-std = ["alloc", "dep:tokio", "dep:tokio-stream", "dep:tokio-util", "dep:env_logger", "dep:tonic", "dep:prost", "dep:log", "rand_core/getrandom", "serde/std"]
+std = [
+  "alloc",
+  "dep:tokio",
+  "dep:tokio-stream",
+  "dep:tokio-util",
+  "dep:env_logger",
+  "dep:tonic",
+  "dep:prost",
+  "dep:log",
+  "rand_core/getrandom",
+  "serde/std",
+]
 alloc = []
 fernet-aes128 = []
-embedded = ["alloc", "dep:esp-hal", "dep:esp-hal-embassy", "dep:esp-backtrace", "dep:esp-println", "dep:embassy-executor", "dep:embassy-time", "dep:embassy-sync", "dep:futures", "dep:xtensa-lx-rt", "dep:log"]
+embedded = [
+  "alloc",
+  "dep:esp-hal",
+  "dep:esp-hal-embassy",
+  "dep:esp-backtrace",
+  "dep:esp-println",
+  "dep:embassy-executor",
+  "dep:embassy-time",
+  "dep:embassy-sync",
+  "dep:futures",
+  "dep:xtensa-lx-rt",
+  "dep:log",
+]
 embassy-virtual = [
-    "alloc",
-    "dep:embassy-executor",
-    "dep:embassy-time",
-    "dep:embassy-sync",
-    "dep:futures",
-    "embassy-executor/arch-std",
-    "embassy-executor/executor-thread",
-    "embassy-executor/task-arena-size-10240",
-    "embassy-time/std",
-    "embassy-sync/std",
+  "alloc",
+  "dep:embassy-executor",
+  "dep:embassy-time",
+  "dep:embassy-sync",
+  "dep:futures",
+  "embassy-executor/arch-std",
+  "embassy-executor/executor-thread",
+  "embassy-executor/task-arena-size-10240",
+  "embassy-time/std",
+  "embassy-sync/std",
 ]
 
 [build-dependencies]

@@ -1,8 +1,4 @@
-# Minimal Embassy - T-Halow
-
-Run rust on your t-halow!
-
-## Run this badboyy
+# Reticulum-rs on T-Halow
 
 ```sh
 cargo install espup

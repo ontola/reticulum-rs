@@ -1,0 +1,27 @@
+[package]
+name = "reticulum-rs-t-halow"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-hal = { version = "1.0", default-features = false }
+ed25519-dalek = { version = "2.1.1", default-features = false, features = ["rand_core"] }
+embassy-executor = { version = "0.7", features = ["task-arena-size-20480"] }
+embassy-sync = "0.6"
+embassy-time = "0.4"
+esp-alloc = "0.6.0"
+esp-backtrace = { version = "0.15", features = ["esp32s3", "panic-handler", "println"] }
+esp-hal = { version = "0.23", features = ["esp32s3", "unstable"] }
+esp-hal-embassy = { version = "0.6", features = ["esp32s3"] }
+esp-println = { version = "0.13", features = ["esp32s3", "log"] }
+heapless = "0.8"
+log = "0.4"
+rand_chacha = { version = "0.3.1", default-features = false }
+reticulum = { path = "..", default-features = false, features = ["embedded"] }
+static_cell = "2"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = "s"
+debug = true

@@ -1,0 +1,18 @@
+[package]
+name = "reticulum-mesh-sim"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+description = "Host-side large-scale mesh simulator for reticulum-rs embedded/Embassy transport behavior."
+
+[dependencies]
+reticulum = { path = "..", default-features = false, features = ["embassy-virtual"] }
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "mesh_stress"
+harness = false
