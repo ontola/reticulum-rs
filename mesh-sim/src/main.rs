@@ -10,6 +10,7 @@ fn print_usage() {
 Usage: reticulum-mesh-sim [options]
 
 Run a line-topology announce stress scenario and print stability metrics.
+For 1k+ nodes, build with `cargo run --release` so the spatial index and air queue stay fast.
 
 Options:
   --nodes <N>     Number of nodes (default: 32)

@@ -7,8 +7,12 @@
 //! For experiments over node count, buffer sizes, and processing budget, see
 //! [`BenchmarkParams`], [`run_line_announce_benchmark`], and [`StabilityMetrics`].
 //! Run `cargo bench -p reticulum-mesh-sim --bench mesh_stress` for Criterion timing.
+//!
+//! **Large meshes (1k–10k+ nodes):** use a `--release` binary; broadcasts use a
+//! per-tick spatial grid and `Arc` shared packets to avoid naive full-mesh cost and buffer clones per neighbor.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use reticulum::hash::AddressHash;
 use reticulum::packet::{Packet, PacketDataBuffer, PacketType};
@@ -70,6 +74,24 @@ impl Default for RadioConfig {
 pub struct SimConfig {
     pub radio: RadioConfig,
     pub max_packet_hops: u8,
+    /// Gross PHY bitrate of the shared wireless medium (bits per second).
+    /// `None` means unlimited air capacity (legacy / stress without RF limits).
+    pub medium_throughput_bps: Option<u64>,
+    /// Wall-clock duration represented by one simulation tick, in **microseconds**.
+    /// Used with [`SimConfig::medium_throughput_bps`] to compute per-tick air budget:
+    /// `bits_per_tick = bps * tick_duration_us / 1_000_000`.
+    pub tick_duration_us: u64,
+    /// When set with [`SimConfig::medium_throughput_bps`], **unused** bits from prior ticks are
+    /// carried forward up to this cap (`remaining = min(remaining + grant, cap)` each tick).
+    /// When `None`, each tick **replaces** the budget with one grant only (stronger than physics:
+    /// a frame longer than one tick’s bits can never be sent — often misleading for slow PHYs).
+    pub medium_bit_bucket_max: Option<u64>,
+    /// Spread nodes’ first announce across [`NodeConfig::announce_interval`] (reduces unrealistic
+    /// “every node fires the same tick” load). Typical for real CSMA / scheduled UX.
+    pub stagger_announces: bool,
+    /// Fixed on-air size for throughput debit (bytes). When set, overrides [`approx_packet_on_air_bytes`]
+    /// for budgeting only — useful for short LoRa/MAC frames while keeping logical `Packet`s.
+    pub medium_on_air_bytes_override: Option<usize>,
 }
 
 impl Default for SimConfig {
@@ -77,8 +99,33 @@ impl Default for SimConfig {
         Self {
             radio: RadioConfig::default(),
             max_packet_hops: 8,
+            medium_throughput_bps: None,
+            tick_duration_us: 1_000,
+            medium_bit_bucket_max: None,
+            stagger_announces: false,
+            medium_on_air_bytes_override: None,
         }
     }
+}
+
+/// Bits cleared on the medium each simulated tick from gross bitrate and tick duration.
+#[must_use]
+pub fn medium_bits_per_tick(throughput_bps: u64, tick_duration_us: u64) -> u64 {
+    throughput_bps
+        .saturating_mul(tick_duration_us)
+        .saturating_div(1_000_000)
+}
+
+/// Very rough on-air size for throughput budgeting (single-destination Reticulum-like frame).
+#[must_use]
+pub fn approx_packet_on_air_bytes(packet: &Packet) -> usize {
+    const FIXED: usize = 33 + 16 + 1;
+    let transport = usize::from(packet.transport.is_some()) * 16;
+    let ifac = packet
+        .ifac
+        .map(|i| 1usize.saturating_add(i.length))
+        .unwrap_or(0);
+    FIXED + transport + ifac + packet.data.len()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +133,8 @@ pub enum DropReason {
     Offline,
     OutOfRange,
     AirQueueFull,
+    /// Offered load exceeds the shared medium’s bitrate budget for this tick.
+    ThroughputLimited,
     InboxFull,
     RouteTableFull,
     NoRoute,
@@ -107,6 +156,7 @@ pub struct SimStats {
     pub dropped_offline: u64,
     pub dropped_out_of_range: u64,
     pub dropped_air_queue_full: u64,
+    pub dropped_throughput_limited: u64,
     pub dropped_inbox_full: u64,
     pub dropped_route_table_full: u64,
     pub dropped_no_route: u64,
@@ -120,19 +170,25 @@ impl SimStats {
         self.dropped_offline
             + self.dropped_out_of_range
             + self.dropped_air_queue_full
+            + self.dropped_throughput_limited
             + self.dropped_inbox_full
             + self.dropped_route_table_full
             + self.dropped_no_route
             + self.dropped_hop_limit
     }
 
-    /// Drops tied to finite buffers or routing tables (typical “stability under load” signals).
+    /// Drops tied to finite buffers, routing tables, or **medium bitrate** (offered load vs capacity).
     pub fn dropped_resource_pressure(&self) -> u64 {
-        self.dropped_air_queue_full + self.dropped_inbox_full + self.dropped_route_table_full
+        self.dropped_air_queue_full
+            + self.dropped_inbox_full
+            + self.dropped_route_table_full
+            + self.dropped_throughput_limited
     }
 
     pub fn is_clogged(&self) -> bool {
-        self.dropped_air_queue_full > 0 || self.dropped_inbox_full > 0
+        self.dropped_air_queue_full > 0
+            || self.dropped_inbox_full > 0
+            || self.dropped_throughput_limited > 0
     }
 
     /// Successful air transmissions as a fraction of attempts (0..=1).
@@ -150,6 +206,7 @@ impl SimStats {
             DropReason::Offline => self.dropped_offline += 1,
             DropReason::OutOfRange => self.dropped_out_of_range += 1,
             DropReason::AirQueueFull => self.dropped_air_queue_full += 1,
+            DropReason::ThroughputLimited => self.dropped_throughput_limited += 1,
             DropReason::InboxFull => self.dropped_inbox_full += 1,
             DropReason::RouteTableFull => self.dropped_route_table_full += 1,
             DropReason::NoRoute => self.dropped_no_route += 1,
@@ -163,6 +220,7 @@ impl SimStats {
 pub struct StabilityMetrics {
     pub drops_per_tick: f64,
     pub resource_drops_per_tick: f64,
+    pub throughput_drops_per_tick: f64,
     pub air_tx_success_ratio: f64,
     pub data_delivery_ratio: Option<f64>,
     pub avg_route_table_utilization: f64,
@@ -175,6 +233,7 @@ impl StabilityMetrics {
         let ticks = sim.stats.ticks.max(1) as f64;
         let dropped_total = sim.stats.dropped_total() as f64;
         let resource = sim.stats.dropped_resource_pressure() as f64;
+        let throughput = sim.stats.dropped_throughput_limited as f64;
         let data_delivery_ratio = if sim.stats.data_sent > 0 {
             Some(sim.stats.data_delivered as f64 / sim.stats.data_sent as f64)
         } else {
@@ -183,6 +242,7 @@ impl StabilityMetrics {
         Self {
             drops_per_tick: dropped_total / ticks,
             resource_drops_per_tick: resource / ticks,
+            throughput_drops_per_tick: throughput / ticks,
             air_tx_success_ratio: sim.stats.air_tx_success_ratio(),
             data_delivery_ratio,
             avg_route_table_utilization: sim.avg_route_table_utilization(),
@@ -237,6 +297,16 @@ pub struct BenchmarkParams {
     pub spacing: f32,
     pub memory: MeshMemoryBudget,
     pub bandwidth: MeshBandwidthBudget,
+    /// Gross medium bitrate (bit/s). `None` = no throughput limit.
+    pub medium_throughput_bps: Option<u64>,
+    /// Microseconds of simulated time per tick (see [`SimConfig::tick_duration_us`]).
+    pub tick_duration_us: u64,
+    /// Optional bit-bucket cap (see [`SimConfig::medium_bit_bucket_max`]).
+    pub medium_bit_bucket_max: Option<u64>,
+    /// Spread announce deadlines across the interval (see [`SimConfig::stagger_announces`]).
+    pub stagger_announces: bool,
+    /// Short MAC airtime for PHY budgeting (see [`SimConfig::medium_on_air_bytes_override`]).
+    pub medium_on_air_bytes_override: Option<usize>,
 }
 
 impl Default for BenchmarkParams {
@@ -248,6 +318,11 @@ impl Default for BenchmarkParams {
             spacing: 1.0,
             memory: MeshMemoryBudget::default(),
             bandwidth: MeshBandwidthBudget::default(),
+            medium_throughput_bps: None,
+            tick_duration_us: 1_000,
+            medium_bit_bucket_max: None,
+            stagger_announces: false,
+            medium_on_air_bytes_override: None,
         }
     }
 }
@@ -267,6 +342,11 @@ pub fn run_line_announce_benchmark(params: &BenchmarkParams) -> BenchmarkReport 
             latency_ticks: params.bandwidth.latency_ticks,
             air_queue_limit: params.memory.air_queue_limit,
         },
+        medium_throughput_bps: params.medium_throughput_bps,
+        tick_duration_us: params.tick_duration_us,
+        medium_bit_bucket_max: params.medium_bit_bucket_max,
+        stagger_announces: params.stagger_announces,
+        medium_on_air_bytes_override: params.medium_on_air_bytes_override,
         ..SimConfig::default()
     });
 
@@ -306,7 +386,7 @@ struct RouteEntry {
 #[derive(Debug, Clone)]
 struct Frame {
     previous_hop: NodeId,
-    packet: Packet,
+    packet: Arc<Packet>,
 }
 
 #[derive(Debug, Clone)]
@@ -329,16 +409,16 @@ pub struct SimNode {
 }
 
 impl SimNode {
-    fn new(id: NodeId, position: Position, config: NodeConfig) -> Self {
+    fn new(id: NodeId, position: Position, config: NodeConfig, next_announce_at: Tick) -> Self {
         Self {
             id,
-            address: AddressHash::new_from_slice(format!("mesh-sim-node-{id}").as_bytes()),
+            address: AddressHash::new_from_slice(&id.to_le_bytes()),
             position,
             online: true,
             config,
             inbox: VecDeque::new(),
             routes: VecDeque::new(),
-            next_announce_at: 0,
+            next_announce_at,
         }
     }
 
@@ -423,6 +503,13 @@ pub struct MeshSim {
     air: VecDeque<ScheduledFrame>,
     stats: SimStats,
     tick: Tick,
+    /// Uniform grid for neighbor queries (`broadcast_from`). Rebuilt at each [`MeshSim::step`] start.
+    spatial_buckets: HashMap<(i32, i32), Vec<NodeId>>,
+    spatial_cell_size: f32,
+    /// Chebyshev radius in cells around the source cell to scan (covers all pairs within `radio.range`).
+    spatial_dr: i32,
+    /// Bits still transmissible on the shared medium for the current tick (reset in [`MeshSim::step`]).
+    medium_bits_remaining: u64,
 }
 
 impl MeshSim {
@@ -433,12 +520,22 @@ impl MeshSim {
             air: VecDeque::new(),
             stats: SimStats::default(),
             tick: 0,
+            spatial_buckets: HashMap::new(),
+            spatial_cell_size: 1.0,
+            spatial_dr: 1,
+            medium_bits_remaining: 0,
         }
     }
 
     pub fn add_node(&mut self, position: Position, config: NodeConfig) -> NodeId {
         let id = self.nodes.len();
-        self.nodes.push(SimNode::new(id, position, config));
+        let next_announce_at = if self.config.stagger_announces {
+            let iv = config.announce_interval.max(1);
+            (id as Tick).wrapping_mul(17) % iv
+        } else {
+            0
+        };
+        self.nodes.push(SimNode::new(id, position, config, next_announce_at));
         id
     }
 
@@ -509,7 +606,38 @@ impl MeshSim {
         self.broadcast_from(source, frame)
     }
 
+    fn rebuild_spatial_index(&mut self) {
+        self.spatial_buckets.clear();
+        let range = self.config.radio.range.max(0.0).max(1e-6);
+        // Cell size ties to range so a 2D grid sweep cannot miss in-range pairs.
+        let cell_size = (range / 2.0).max(1e-4);
+        let dr = ((range / cell_size).ceil() as i32 + 2).max(1);
+        self.spatial_cell_size = cell_size;
+        self.spatial_dr = dr;
+
+        for id in 0..self.nodes.len() {
+            let p = self.nodes[id].position;
+            let cx = (p.x / cell_size).floor() as i32;
+            let cy = (p.y / cell_size).floor() as i32;
+            self.spatial_buckets.entry((cx, cy)).or_default().push(id);
+        }
+    }
+
     pub fn step(&mut self) {
+        self.rebuild_spatial_index();
+        self.medium_bits_remaining = match self.config.medium_throughput_bps {
+            Some(bps) => {
+                let grant = medium_bits_per_tick(bps, self.config.tick_duration_us);
+                match self.config.medium_bit_bucket_max {
+                    None => grant,
+                    Some(cap) => self
+                        .medium_bits_remaining
+                        .saturating_add(grant)
+                        .min(cap),
+                }
+            }
+            None => u64::MAX,
+        };
         self.emit_due_announces();
         self.deliver_due_air_frames();
         self.process_node_inboxes();
@@ -604,9 +732,12 @@ impl MeshSim {
                     self.stats.record_drop(DropReason::HopLimit);
                     return;
                 }
-                let mut forwarded = frame;
-                forwarded.previous_hop = node_id;
-                forwarded.packet.header.hops += 1;
+                let mut pkt = (*frame.packet).clone();
+                pkt.header.hops += 1;
+                let forwarded = Frame {
+                    previous_hop: node_id,
+                    packet: Arc::new(pkt),
+                };
                 self.stats.data_forwarded += 1;
                 let _ = self.unicast_from(node_id, next_hop, forwarded);
             }
@@ -616,19 +747,49 @@ impl MeshSim {
 
     fn broadcast_from(&mut self, source: NodeId, frame: Frame) -> Result<(), DropReason> {
         let mut delivered_any = false;
-        for recipient in 0..self.nodes.len() {
-            if recipient == source {
-                continue;
-            }
-            if frame.previous_hop == recipient {
-                continue;
-            }
-            match self.schedule_air_delivery(source, recipient, frame.clone()) {
-                Ok(()) => delivered_any = true,
-                Err(DropReason::OutOfRange) => {}
-                Err(reason) => {
-                    self.stats.record_drop(reason);
-                    return Err(reason);
+        let pos = self.nodes[source].position;
+        let cell = self.spatial_cell_size;
+        let cx = (pos.x / cell).floor() as i32;
+        let cy = (pos.y / cell).floor() as i32;
+        let dr = self.spatial_dr;
+        let range = self.config.radio.range;
+        let prev = frame.previous_hop;
+        let src_pos = self.nodes[source].position;
+
+        for ix in -dr..=dr {
+            for iy in -dr..=dr {
+                let Some(bucket) = self.spatial_buckets.get(&(cx + ix, cy + iy)) else {
+                    continue;
+                };
+                let recipients = bucket.clone();
+                for recipient in recipients {
+                    if recipient == source || recipient == prev {
+                        continue;
+                    }
+                    if !self.nodes[recipient].online {
+                        continue;
+                    }
+                    if src_pos.distance_to(self.nodes[recipient].position) > range {
+                        continue;
+                    }
+                    match self.schedule_air_delivery(
+                        source,
+                        recipient,
+                        Frame {
+                            previous_hop: frame.previous_hop,
+                            packet: Arc::clone(&frame.packet),
+                        },
+                    ) {
+                        Ok(()) => delivered_any = true,
+                        Err(DropReason::OutOfRange) => {}
+                        Err(DropReason::ThroughputLimited) => {
+                            self.stats.record_drop(DropReason::ThroughputLimited);
+                        }
+                        Err(reason) => {
+                            self.stats.record_drop(reason);
+                            return Err(reason);
+                        }
+                    }
                 }
             }
         }
@@ -676,6 +837,18 @@ impl MeshSim {
             return Err(DropReason::AirQueueFull);
         }
 
+        if self.config.medium_throughput_bps.is_some() {
+            let bytes = self
+                .config
+                .medium_on_air_bytes_override
+                .unwrap_or_else(|| approx_packet_on_air_bytes(frame.packet.as_ref()));
+            let bits = (bytes as u64).saturating_mul(8).max(8);
+            if bits > self.medium_bits_remaining {
+                return Err(DropReason::ThroughputLimited);
+            }
+            self.medium_bits_remaining -= bits;
+        }
+
         frame.previous_hop = source;
         self.air.push_back(ScheduledFrame {
             deliver_at: self.tick + self.config.radio.latency_ticks,
@@ -688,19 +861,19 @@ impl MeshSim {
     }
 }
 
-fn announce_packet(destination: AddressHash) -> Packet {
+fn announce_packet(destination: AddressHash) -> Arc<Packet> {
     let mut packet = Packet::default();
     packet.header.packet_type = PacketType::Announce;
     packet.destination = destination;
-    packet
+    Arc::new(packet)
 }
 
-fn data_packet(destination: AddressHash, payload: &[u8]) -> Packet {
+fn data_packet(destination: AddressHash, payload: &[u8]) -> Arc<Packet> {
     let mut packet = Packet::default();
     packet.header.packet_type = PacketType::Data;
     packet.destination = destination;
     packet.data = PacketDataBuffer::new_from_slice(payload);
-    packet
+    Arc::new(packet)
 }
 
 #[derive(Debug, Clone)]
@@ -725,6 +898,11 @@ pub fn run_dense_announce_pressure_scenario(nodes: usize, ticks: Tick) -> Scenar
             latency_ticks: 1,
             announce_interval: 1,
         },
+        medium_throughput_bps: None,
+        tick_duration_us: 1_000,
+        medium_bit_bucket_max: None,
+        stagger_announces: false,
+        medium_on_air_bytes_override: None,
     });
     ScenarioReport {
         name: "dense_announce_pressure",
@@ -835,6 +1013,11 @@ mod tests {
                 latency_ticks: 1,
                 announce_interval: 1,
             },
+            medium_throughput_bps: None,
+            tick_duration_us: 1_000,
+            medium_bit_bucket_max: None,
+            stagger_announces: false,
+            medium_on_air_bytes_override: None,
         });
         let tight = run_line_announce_benchmark(&BenchmarkParams {
             nodes: 24,
@@ -851,10 +1034,100 @@ mod tests {
                 latency_ticks: 1,
                 announce_interval: 1,
             },
+            medium_throughput_bps: None,
+            tick_duration_us: 1_000,
+            medium_bit_bucket_max: None,
+            stagger_announces: false,
+            medium_on_air_bytes_override: None,
         });
 
         assert!(loose.stats.air_tx_attempts > 0);
         assert!(tight.stats.dropped_resource_pressure() > 0);
         assert!(loose.stability.air_tx_success_ratio > tight.stability.air_tx_success_ratio);
+    }
+
+    /// Large regression; run with `cargo test -p reticulum-mesh-sim ten_k_nodes_line_smoke -- --ignored --release`.
+    #[test]
+    #[ignore]
+    fn ten_k_nodes_line_smoke() {
+        let report = run_line_announce_benchmark(&BenchmarkParams {
+            nodes: 10_000,
+            ticks: 3,
+            radio_range: 1_000.0,
+            spacing: 1.0,
+            memory: MeshMemoryBudget {
+                inbox_limit: 32,
+                route_table_limit: 256,
+                air_queue_limit: 16_384,
+            },
+            bandwidth: MeshBandwidthBudget {
+                packets_per_tick: 8,
+                latency_ticks: 1,
+                announce_interval: 500,
+            },
+            medium_throughput_bps: None,
+            tick_duration_us: 1_000,
+            medium_bit_bucket_max: None,
+            stagger_announces: false,
+            medium_on_air_bytes_override: None,
+        });
+        assert_eq!(report.stats.ticks, 3);
+        assert!(report.stats.air_tx_attempts > 0);
+    }
+
+    #[test]
+    fn low_bitrate_marks_throughput_drops() {
+        let narrow = run_line_announce_benchmark(&BenchmarkParams {
+            nodes: 16,
+            ticks: 50,
+            radio_range: 500.0,
+            spacing: 25.0,
+            memory: MeshMemoryBudget {
+                inbox_limit: 256,
+                route_table_limit: 32,
+                air_queue_limit: 50_000,
+            },
+            bandwidth: MeshBandwidthBudget {
+                packets_per_tick: 32,
+                latency_ticks: 1,
+                announce_interval: 2,
+            },
+            medium_throughput_bps: Some(15_000),
+            tick_duration_us: 1_000,
+            medium_bit_bucket_max: None,
+            stagger_announces: false,
+            medium_on_air_bytes_override: None,
+        });
+        assert!(
+            narrow.stats.dropped_throughput_limited > 0,
+            "expected PHY budget to block most parallel air copies"
+        );
+        assert!(narrow.stability.throughput_drops_per_tick > 0.0);
+    }
+
+    #[test]
+    fn two_node_lora_with_bit_bucket_learns_routes() {
+        let mut sim = MeshSim::new(SimConfig {
+            radio: RadioConfig {
+                range: 120.0,
+                latency_ticks: 1,
+                air_queue_limit: 256,
+            },
+            medium_throughput_bps: Some(10_000),
+            tick_duration_us: 10_000,
+            medium_bit_bucket_max: Some(50_000),
+            ..SimConfig::default()
+        });
+        let cfg = NodeConfig {
+            announce_interval: 20,
+            packets_per_tick: 32,
+            ..NodeConfig::default()
+        };
+        let a = sim.add_node(Position { x: 0.0, y: 0.0 }, cfg.clone());
+        let b = sim.add_node(Position { x: 40.0, y: 0.0 }, cfg);
+        sim.run_ticks(200);
+        assert!(sim.node(a).knows_route_to(sim.node(b).address()));
+        assert!(sim.node(b).knows_route_to(sim.node(a).address()));
+        assert!(sim.stats().announces_received >= 2);
     }
 }

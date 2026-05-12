@@ -23,6 +23,11 @@ fn bench_line_announce_scaling(c: &mut Criterion) {
                     latency_ticks: 1,
                     announce_interval: 1,
                 },
+                medium_throughput_bps: None,
+                tick_duration_us: 1_000,
+                medium_bit_bucket_max: None,
+                stagger_announces: false,
+                medium_on_air_bytes_override: None,
             };
             b.iter(|| run_line_announce_benchmark(black_box(&params)));
         });

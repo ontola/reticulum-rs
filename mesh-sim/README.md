@@ -10,9 +10,12 @@ Long term it should wrap `EmbeddedTransport` and drive the real Embassy-oriented
 
 From the workspace root:
 
+For thousands of nodes, prefer **release** builds (`cargo run --release`) so spatial indexing and air scheduling stay fast.
+
 ```sh
 cargo test -p reticulum-mesh-sim
 cargo run -p reticulum-mesh-sim
+cargo run -p reticulum-mesh-sim --release -- --nodes 10000 --ticks 20 --announce 200
 cargo run -p reticulum-mesh-sim -- --help
 ```
 
@@ -21,6 +24,23 @@ Criterion timing (add `-- --quick` for a short run):
 ```sh
 cargo bench -p reticulum-mesh-sim --bench mesh_stress
 ```
+
+### Scaling and performance
+
+- Neighbor discovery uses a **uniform spatial grid** rebuilt each tick, so cost tracks local density: a long line with limited `range` stays near **O(N × neighbors-in-range)** per broadcast instead of **O(N²)**.
+- If `radio.range` is huge so **every node shares one cell**, expect full-mesh cost again—that is intentional for “everyone hears everyone” scenarios.
+- **Packet bodies** in flight are shared with **`Arc`**, avoiding large per-hop `Packet` clones during floods.
+- **Node addresses** are derived from `NodeId` bytes (via `AddressHash::new_from_slice`), so creating 10k+ nodes does not allocate per-node formatted strings.
+
+Run a HaLow vs LoRa-style **gross bitrate** comparison (same topology; control traffic is modeled as fixed-size frames on a shared medium):
+
+```sh
+cargo run -p reticulum-mesh-sim --release --bin rf_compare
+```
+
+See [`medium_throughput_bps`](src/lib.rs) / [`tick_duration_us`](src/lib.rs) / [`medium_bit_bucket_max`](src/lib.rs) and **`DropReason::ThroughputLimited`** / **`dropped_throughput_limited`**: when offered parallel transmissions exceed `bps × tick_duration`, the sim records **why** scaling fails (PHY starvation before queues fill). **Pitfall:** with throughput enabled and **`medium_bit_bucket_max: None`**, each tick **replaces** the bit budget (no carry-over), so a **single frame larger than one tick’s grant** can never be sent—use a bucket cap or a longer `tick_duration_us` for slow PHYs.
+
+**LoRa-style calibration (optional):** real meshes rarely hammer sub-second announces from every node in perfect lockstep. Use **`stagger_announces`**, a longer **`announce_interval`** (seconds of simulated wall time), and **`medium_on_air_bytes_override`** for short over-the-air frames so the PHY model matches Meshtastic/LoRa MAC more than “giant logical `Packet` retx to all neighbors every 50 ms.” Pick an override that fits ~one tick’s bit grant if you want to separate **fan-out congestion** from **frame larger than tick** artifacts (`rf_compare` uses 12 B ≈ 96 bits with 10 ms ticks @ 10 kb/s). `lora_capacity` shares that profile; `lora_sweep` section A shows the harsher baseline.
 
 ### CLI (current)
 
@@ -48,14 +68,16 @@ Use these types for programmatic sweeps (see `src/lib.rs`):
 
 | Type | Role |
 |------|------|
-| `BenchmarkParams` | `nodes`, `ticks`, `radio_range`, `spacing`, plus nested budgets |
+| `BenchmarkParams` | `nodes`, `ticks`, `radio_range`, `spacing`, budgets, `medium_throughput_bps`, `tick_duration_us`, optional `medium_bit_bucket_max`, `stagger_announces`, `medium_on_air_bytes_override` |
 | `MeshMemoryBudget` | `inbox_limit`, `route_table_limit`, `air_queue_limit` |
 | `MeshBandwidthBudget` | `packets_per_tick`, `latency_ticks`, `announce_interval` |
 | `run_line_announce_benchmark` | Builds the line mesh, runs ticks, returns `BenchmarkReport` |
-| `StabilityMetrics` | `drops_per_tick`, `resource_drops_per_tick`, `air_tx_success_ratio`, `avg_route_table_utilization`, etc. |
-| `SimStats` | Counters including `air_tx_attempts` / `air_tx_ok` for air-queue success ratio |
+| `StabilityMetrics` | `drops_per_tick`, `resource_drops_per_tick`, `throughput_drops_per_tick`, `air_tx_success_ratio`, … |
+| `SimStats` | Counters including `dropped_throughput_limited`, `air_tx_attempts` / `air_tx_ok` |
 
-`resource_drops_per_tick` aggregates **air queue full**, **inbox full**, and **route table full** drops—useful when varying buffers and node count.
+`resource_drops_per_tick` aggregates **air queue full**, **inbox full**, **route table full**, and **throughput-limited** drops.
+
+`medium_bits_per_tick(bps, tick_duration_us)` and `approx_packet_on_air_bytes` convert **gross PHY bitrate** into a per-tick air budget (coarse framing estimate).
 
 ## Goals
 
