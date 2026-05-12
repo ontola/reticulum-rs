@@ -49,7 +49,10 @@ pub use std_backend::*;
 
 // --- embedded backend (Embassy) --------------------------------------------
 
-#[cfg(all(not(feature = "std"), feature = "embedded"))]
+#[cfg(all(
+    not(feature = "std"),
+    any(feature = "embedded", feature = "embassy-virtual")
+))]
 mod embedded_backend {
     extern crate alloc;
 
@@ -371,5 +374,8 @@ mod embedded_backend {
     }
 }
 
-#[cfg(all(not(feature = "std"), feature = "embedded"))]
+#[cfg(all(
+    not(feature = "std"),
+    any(feature = "embedded", feature = "embassy-virtual")
+))]
 pub use embedded_backend::*;

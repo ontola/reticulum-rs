@@ -1,58 +1,80 @@
+#![cfg(feature = "embassy-virtual")]
+
+use std::sync::mpsc;
+use std::time::Duration as StdDuration;
+
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use reticulum::hash::AddressHash;
 use reticulum::iface_messages::{RxMessage, TxMessageType};
 use reticulum::packet::PacketType;
 use reticulum::transport_embedded::{
-    EmbeddedTransport, EmbeddedTransportConfig, EmbeddedTransportPort,
+    EmbeddedTransport, EmbeddedTransportConfig, EmbeddedTransportPort, EmbeddedTransportStats,
 };
 
-static DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+#[derive(Debug)]
+struct MeshOutcome {
+    acks: Vec<Vec<u8>>,
+    node_a: EmbeddedTransportStats,
+    node_b: EmbeddedTransportStats,
+}
 
-#[embassy_executor::main]
-async fn main(spawner: Spawner) {
-    reticulum::async_backend::set_spawner(spawner);
+#[test]
+fn embassy_virtual_nodes_exchange_packets_through_embedded_transport() {
+    let (tx, rx) = mpsc::channel();
 
-    let node_a_addr = AddressHash::new_from_slice(b"virtual-embassy-node-a");
-    let node_b_addr = AddressHash::new_from_slice(b"virtual-embassy-node-b");
+    std::thread::spawn(move || {
+        let executor = Box::leak(Box::new(embassy_executor::Executor::new()));
+        executor.run(|spawner| {
+            reticulum::async_backend::set_spawner(spawner);
+            spawner.spawn(mesh_regression(tx)).unwrap();
+        });
+    });
+
+    let outcome = rx
+        .recv_timeout(StdDuration::from_secs(5))
+        .expect("virtual Embassy mesh test timed out");
+
+    assert_eq!(
+        outcome.acks,
+        vec![b"ack-1".to_vec(), b"ack-2".to_vec(), b"ack-3".to_vec()]
+    );
+
+    assert_node_stats("node-a", outcome.node_a);
+    assert_node_stats("node-b", outcome.node_b);
+}
+
+#[embassy_executor::task]
+async fn mesh_regression(tx: mpsc::Sender<MeshOutcome>) {
+    let node_a_addr = AddressHash::new_from_slice(b"test-embassy-node-a");
+    let node_b_addr = AddressHash::new_from_slice(b"test-embassy-node-b");
 
     let node_a = make_node(node_a_addr);
     let node_b = make_node(node_b_addr);
 
-    spawner
-        .spawn(virtual_air_link(
-            "a->b",
-            node_a_addr,
-            node_b_addr,
-            node_a,
-            node_b,
-        ))
+    Spawner::for_current_executor()
+        .await
+        .spawn(virtual_air_link(node_a_addr, node_b_addr, node_a, node_b))
         .unwrap();
-    spawner
-        .spawn(virtual_air_link(
-            "b->a",
-            node_b_addr,
-            node_a_addr,
-            node_b,
-            node_a,
-        ))
+    Spawner::for_current_executor()
+        .await
+        .spawn(virtual_air_link(node_b_addr, node_a_addr, node_b, node_a))
         .unwrap();
-    spawner
+    Spawner::for_current_executor()
+        .await
         .spawn(node_b_app(node_b_addr, node_a_addr, node_b))
         .unwrap();
-    spawner
-        .spawn(node_a_app(node_a_addr, node_b_addr, node_a))
-        .unwrap();
 
-    DONE.wait().await;
+    let acks = run_node_a_app(node_a_addr, node_b_addr, node_a).await;
+
     Timer::after(Duration::from_millis(50)).await;
 
-    println!("node-a stats: {:?}", node_a.stats());
-    println!("node-b stats: {:?}", node_b.stats());
-
-    std::process::exit(0);
+    tx.send(MeshOutcome {
+        acks,
+        node_a: node_a.stats(),
+        node_b: node_b.stats(),
+    })
+    .unwrap();
 }
 
 fn make_node(local_address: AddressHash) -> &'static EmbeddedTransport {
@@ -66,7 +88,6 @@ fn make_node(local_address: AddressHash) -> &'static EmbeddedTransport {
 
 #[embassy_executor::task(pool_size = 2)]
 async fn virtual_air_link(
-    name: &'static str,
     from_addr: AddressHash,
     to_addr: AddressHash,
     from: &'static EmbeddedTransport,
@@ -81,60 +102,40 @@ async fn virtual_air_link(
                     address: from_addr,
                     packet: message.packet,
                 });
-                println!(
-                    "air {name}: delivered {:?} {} -> {}",
-                    message.packet.header.packet_type,
-                    short_addr(from_addr),
-                    short_addr(to_addr)
-                );
             }
         }
     }
 }
 
-#[embassy_executor::task]
-async fn node_a_app(
+async fn run_node_a_app(
     node_a_addr: AddressHash,
     node_b_addr: AddressHash,
     node_a: &'static EmbeddedTransport,
-) {
+) -> Vec<Vec<u8>> {
     let mut ingress = node_a.ingress_events();
     let messages = [
         b"hello from embedded node-a".as_slice(),
         b"node-a packet two".as_slice(),
         b"node-a final packet".as_slice(),
     ];
+    let mut acks = Vec::new();
 
-    println!("node-a: up at {}", short_addr(node_a_addr));
-
-    for (index, payload) in messages.iter().enumerate() {
-        node_a.request_synthetic(PacketType::Data, node_b_addr, payload);
-        println!(
-            "node-a: sent {} to {}: {}",
-            index + 1,
-            short_addr(node_b_addr),
-            text(payload)
-        );
+    for payload in messages {
+        node_a.request_synthetic_bytes(PacketType::Data, node_b_addr, payload);
 
         loop {
             if let Ok(message) = ingress.recv().await {
                 if message.packet.header.packet_type == PacketType::Data
                     && message.packet.destination == node_a_addr
                 {
-                    println!(
-                        "node-a: received from {}: {}",
-                        short_addr(message.address),
-                        text(message.packet.data.as_slice())
-                    );
+                    acks.push(message.packet.data.as_slice().to_vec());
                     break;
                 }
             }
         }
-
-        Timer::after(Duration::from_millis(100)).await;
     }
 
-    DONE.signal(());
+    acks
 }
 
 #[embassy_executor::task]
@@ -146,8 +147,6 @@ async fn node_b_app(
     let mut ingress = node_b.ingress_events();
     let mut ack_count = 0u8;
 
-    println!("node-b: up at {}", short_addr(node_b_addr));
-
     loop {
         if let Ok(message) = ingress.recv().await {
             if message.packet.header.packet_type != PacketType::Data
@@ -156,11 +155,6 @@ async fn node_b_app(
                 continue;
             }
 
-            println!(
-                "node-b: received from {}: {}",
-                short_addr(message.address),
-                text(message.packet.data.as_slice())
-            );
             ack_count = ack_count.saturating_add(1);
             let ack = [b'a', b'c', b'k', b'-', b'0' + ack_count];
             node_b.request_synthetic_bytes(PacketType::Data, node_a_addr, &ack);
@@ -175,10 +169,12 @@ fn should_deliver(tx_type: TxMessageType, to_addr: AddressHash) -> bool {
     }
 }
 
-fn text(bytes: &[u8]) -> &str {
-    core::str::from_utf8(bytes).unwrap_or("<non-utf8>")
-}
-
-fn short_addr(address: AddressHash) -> String {
-    address.to_hex_string()[..8].to_string()
+fn assert_node_stats(name: &str, stats: EmbeddedTransportStats) {
+    assert_eq!(stats.interface_ingress_count, 3, "{name} ingress count");
+    assert_eq!(stats.synthetic_ingress_count, 0, "{name} synthetic ingress");
+    assert_eq!(stats.data_count, 3, "{name} data count");
+    assert_eq!(stats.data_deliver_local_count, 3, "{name} local delivery");
+    assert_eq!(stats.egress_generated_count, 3, "{name} egress generated");
+    assert_eq!(stats.egress_dropped_count, 0, "{name} egress dropped");
+    assert_eq!(stats.event_dropped_count, 0, "{name} event dropped");
 }

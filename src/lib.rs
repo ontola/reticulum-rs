@@ -157,13 +157,17 @@ pub mod packet;
 pub mod serde;
 #[cfg(feature = "std")]
 pub mod transport;
-#[cfg(all(feature = "embedded", not(feature = "std"), feature = "alloc"))]
+#[cfg(all(
+    any(feature = "embedded", feature = "embassy-virtual"),
+    not(feature = "std"),
+    feature = "alloc"
+))]
 pub mod transport_embedded;
 #[cfg(feature = "alloc")]
 pub mod transport_engine;
 
 /// Async runtime adapter (Tokio when `std`, Embassy-oriented types when `embedded` without `std`).
-#[cfg(any(feature = "std", feature = "embedded"))]
+#[cfg(any(feature = "std", feature = "embedded", feature = "embassy-virtual"))]
 pub mod async_backend;
 
 #[cfg(feature = "std")]

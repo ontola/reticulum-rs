@@ -90,6 +90,12 @@ pub enum EmbeddedCommand {
         destination: AddressHash,
         payload: &'static [u8],
     },
+    /// Emit a synthetic packet with runtime-owned payload bytes.
+    EmitSyntheticBytes {
+        packet_type: PacketType,
+        destination: AddressHash,
+        payload: PacketDataBuffer,
+    },
 }
 
 /// Tiny typed event channel for Stage D runner observability.
@@ -260,6 +266,17 @@ pub struct EmbeddedTransportStats {
     pub egress_generated_count: u32,
     pub egress_dropped_count: u32,
     pub event_dropped_count: u32,
+}
+
+/// Packet ingress/egress boundary used by embedded drivers and host simulators.
+///
+/// Hardware interfaces and virtual mesh simulations should depend on this small
+/// surface instead of reaching into runner internals. The runner still owns
+/// protocol classification, duplicate filtering, and egress decisions.
+pub trait EmbeddedTransportPort {
+    fn inject_from_interface(&self, message: RxMessage);
+    fn egress_receiver(&self) -> broadcast::Receiver<TxMessage>;
+    fn stats(&self) -> EmbeddedTransportStats;
 }
 
 impl EmbeddedTransport {
@@ -920,6 +937,36 @@ impl EmbeddedTransport {
                                     event_dropped_count.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
+                            EmbeddedCommand::EmitSyntheticBytes {
+                                packet_type,
+                                destination,
+                                payload,
+                            } => {
+                                let mut packet = Packet::default();
+                                packet.header.packet_type = packet_type;
+                                packet.destination = destination;
+                                packet.data = payload;
+                                if egress_tx
+                                    .send(TxMessage {
+                                        tx_type: TxMessageType::Broadcast(None),
+                                        packet,
+                                    })
+                                    .is_err()
+                                {
+                                    egress_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                                egress_generated_count.fetch_add(1, Ordering::Relaxed);
+                                if event_tx
+                                    .send(EmbeddedEvent::SyntheticEgressRequested {
+                                        packet_type,
+                                        destination,
+                                        bytes: payload.len(),
+                                    })
+                                    .is_err()
+                                {
+                                    event_dropped_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
                         }
                     }
                 }
@@ -959,6 +1006,11 @@ impl EmbeddedTransport {
     /// Inject packet received from interface side.
     pub fn ingress_sender(&self) -> broadcast::Sender<RxMessage> {
         self.ingress_tx.clone()
+    }
+
+    /// Inject one fully-formed interface-origin message.
+    pub fn inject_from_interface(&self, message: RxMessage) {
+        let _ = self.ingress_tx.send(message);
     }
 
     /// Convenience helper for Stage D smoke: inject a synthetic announce ingress event.
@@ -1123,6 +1175,20 @@ impl EmbeddedTransport {
         });
     }
 
+    /// Convenience helper: emit a synthetic packet with runtime payload bytes.
+    pub fn request_synthetic_bytes(
+        &self,
+        packet_type: PacketType,
+        destination: AddressHash,
+        payload: &[u8],
+    ) {
+        let _ = self.command_tx.send(EmbeddedCommand::EmitSyntheticBytes {
+            packet_type,
+            destination,
+            payload: PacketDataBuffer::new_from_slice(payload),
+        });
+    }
+
     /// Subscribe to typed embedded-runner events.
     pub fn events(&self) -> broadcast::Receiver<EmbeddedEvent> {
         self.event_tx.subscribe()
@@ -1267,6 +1333,20 @@ impl EmbeddedTransport {
             egress_dropped_count: self.egress_dropped_count(),
             event_dropped_count: self.event_dropped_count(),
         }
+    }
+}
+
+impl EmbeddedTransportPort for EmbeddedTransport {
+    fn inject_from_interface(&self, message: RxMessage) {
+        EmbeddedTransport::inject_from_interface(self, message);
+    }
+
+    fn egress_receiver(&self) -> broadcast::Receiver<TxMessage> {
+        EmbeddedTransport::egress_receiver(self)
+    }
+
+    fn stats(&self) -> EmbeddedTransportStats {
+        EmbeddedTransport::stats(self)
     }
 }
 

@@ -68,10 +68,11 @@ alloc = []
 fernet-aes128 = []
 embedded = ["alloc", "dep:esp-hal", "dep:esp-hal-embassy", "dep:esp-backtrace", "dep:esp-println", "dep:embassy-executor", "dep:embassy-time", "dep:embassy-sync", "dep:futures", "dep:xtensa-lx-rt", "dep:log"]
 embassy-virtual = [
-    "std",
+    "alloc",
     "dep:embassy-executor",
     "dep:embassy-time",
     "dep:embassy-sync",
+    "dep:futures",
     "embassy-executor/arch-std",
     "embassy-executor/executor-thread",
     "embassy-executor/task-arena-size-10240",
