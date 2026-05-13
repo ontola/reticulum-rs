@@ -4,11 +4,13 @@ Host-side mesh simulator for `reticulum-rs`.
 
 This crate exercises Reticulum-style packet behavior with many virtual nodes in one process so you can test routing, forwarding, mobility, and congestion without a physical WiFi HaLow lab for every scenario.
 
-Long term it should wrap `EmbeddedTransport` and drive the real Embassy-oriented transport path. **Today** it simulates at the **packet boundary** (`Packet`, announce/data flows, distance-based “air”, and bounded queues) so we can already stress **node count**, **memory limits**, and **processing budget** and read **stability metrics**.
+Long term, more scenarios should run fully through `EmbeddedTransport` and the Embassy-oriented transport path. **Today** the primary harness is the **packet boundary** simulator (`MeshSim`: `Packet`, announce/data flows, distance-based “air”, bounded queues), so you can stress **node count**, **memory limits**, and **processing budget** and read **stability metrics**. Integration tests under `tests/` plus the [`embassy_mesh`](src/embassy_mesh.rs) helpers already drive **`EmbeddedTransport`** on virtual RF for multi-hop relays and sharded executor scale runs.
 
 ## Quick start
 
 From the workspace root:
+
+This crate ships several binaries. **`cargo run -p reticulum-mesh-sim`** selects the default (**line-announce CLI**, same as `--bin reticulum-mesh-sim`). Other entry points need `--bin …` (see below).
 
 For thousands of nodes, prefer **release** builds (`cargo run --release`) so spatial indexing and air scheduling stay fast.
 
@@ -19,10 +21,19 @@ cargo run -p reticulum-mesh-sim --release -- --nodes 10000 --ticks 20 --announce
 cargo run -p reticulum-mesh-sim -- --help
 ```
 
-Criterion timing (add `-- --quick` for a short run):
+LoRa / capacity sweep utilities (all `release` recommended):
 
 ```sh
-cargo bench -p reticulum-mesh-sim --bench mesh_stress
+cargo run -p reticulum-mesh-sim --release --bin rf_compare
+cargo run -p reticulum-mesh-sim --release --bin lora_capacity
+cargo run -p reticulum-mesh-sim --release --bin lora_sweep
+cargo run -p reticulum-mesh-sim --release --bin lora_100_realistic
+```
+
+Criterion timing (append `-- --quick` for a short run):
+
+```sh
+cargo bench -p reticulum-mesh-sim --bench mesh_stress -- --quick
 ```
 
 ### Scaling and performance
@@ -32,11 +43,7 @@ cargo bench -p reticulum-mesh-sim --bench mesh_stress
 - **Packet bodies** in flight are shared with **`Arc`**, avoiding large per-hop `Packet` clones during floods.
 - **Node addresses** are derived from `NodeId` bytes (via `AddressHash::new_from_slice`), so creating 10k+ nodes does not allocate per-node formatted strings.
 
-Run a HaLow vs LoRa-style **gross bitrate** comparison (same topology; control traffic is modeled as fixed-size frames on a shared medium):
-
-```sh
-cargo run -p reticulum-mesh-sim --release --bin rf_compare
-```
+Run a HaLow vs LoRa-style **gross bitrate** comparison with **`rf_compare`** (same topology; control traffic is modeled as fixed-size frames on a shared medium). **`lora_capacity`** sweeps node count; **`lora_sweep`** contrasts harsh vs calibrated PHY assumptions; **`lora_100_realistic`** runs a longer `MeshSim` line. Commands are listed under **Quick start** above.
 
 See [`medium_throughput_bps`](src/lib.rs) / [`tick_duration_us`](src/lib.rs) / [`medium_bit_bucket_max`](src/lib.rs) and **`DropReason::ThroughputLimited`** / **`dropped_throughput_limited`**: when offered parallel transmissions exceed `bps × tick_duration`, the sim records **why** scaling fails (PHY starvation before queues fill). **Pitfall:** with throughput enabled and **`medium_bit_bucket_max: None`**, each tick **replaces** the bit budget (no carry-over), so a **single frame larger than one tick’s grant** can never be sent—use a bucket cap or a longer `tick_duration_us` for slow PHYs.
 
@@ -44,7 +51,7 @@ See [`medium_throughput_bps`](src/lib.rs) / [`tick_duration_us`](src/lib.rs) / [
 
 ### CLI (current)
 
-The binary runs a **line topology** announce workload using `run_line_announce_benchmark` and prints traffic, drops, queue peaks, and [`StabilityMetrics`](src/lib.rs).
+The default binary (`reticulum-mesh-sim`, see `default-run` in `Cargo.toml`) runs a **line topology** announce workload using `run_line_announce_benchmark` and prints traffic, drops, queue peaks, and [`StabilityMetrics`](src/lib.rs).
 
 ```text
 cargo run -p reticulum-mesh-sim -- \
@@ -255,7 +262,8 @@ Fast regression tests stay small (see `src/lib.rs` `mod tests`):
 - three-node line forwards data,
 - movement breaks and restores connectivity,
 - dense announce pressure shows queue clogging,
-- benchmark harness compares loose vs tight memory/bandwidth.
+- benchmark harness compares loose vs tight memory/bandwidth,
+- Embassy **`EmbeddedTransport`** paths: multi-executor mesh, three-hop relay, timer smoke, and line-scale harness (`tests/`).
 
 Large tests should be explicit and normally ignored:
 
@@ -274,8 +282,8 @@ Progress (rough):
 1. Host-side packet-level simulator with distance topology, announces, data forward, queues, stats — **done** (`MeshSim`).
 2. Line benchmark runner + stability metrics + Criterion bench — **done**.
 3. CLI smoke runner — **done** (`src/main.rs`).
-4. Move an existing two-node Embassy virtual test helper into this crate — **pending**.
-5. `VirtualAir` as a composable module; `SimNode` wrapping `EmbeddedTransport` — **pending**.
+4. Embassy / `EmbeddedTransport` integration harnesses and tests in this crate — **done** (`embassy_mesh`, `tests/*embassy*`).
+5. `VirtualAir` as a composable module; `SimNode` wrapping `EmbeddedTransport` for all simulator modes — **pending**.
 6. Seeded packet loss and jitter; richer topologies — **pending**.
 7. Config-file / scripted scenarios (TOML or similar) — **pending**.
 
