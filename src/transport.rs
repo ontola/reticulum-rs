@@ -44,7 +44,6 @@ use crate::iface::TxMessageType;
 use crate::async_select;
 
 use crate::packet::DestinationType;
-use crate::packet::Header;
 use crate::packet::Packet;
 use crate::packet::PacketDataBuffer;
 
@@ -146,7 +145,7 @@ pub struct AnnounceEvent {
     pub app_data: PacketDataBuffer,
 }
 
-struct TransportHandler {
+pub(crate) struct TransportHandler {
     config: TransportConfig,
     iface_manager: Arc<Mutex<InterfaceManager>>,
     announce_tx: broadcast::Sender<AnnounceEvent>,
@@ -269,7 +268,7 @@ impl Transport {
         let iface_manager = Arc::new(Mutex::new(iface_manager));
 
         let transport_id = if config.retransmit {
-            Some(config.identity.address_hash().clone())
+            Some(*config.identity.address_hash())
         } else {
             None
         };
@@ -326,7 +325,7 @@ impl Transport {
         let (packet, maybe_iface) = self.handler.lock().await.path_table.handle_packet(packet);
 
         if let Some(iface) = maybe_iface {
-            self.send_direct(iface, packet.clone()).await;
+            self.send_direct(iface, packet).await;
             log::trace!("Sent outbound packet to {}", iface);
         }
 
@@ -418,7 +417,7 @@ impl Transport {
             }
         }
 
-        if sent_packets.len() == 0 {
+        if sent_packets.is_empty() {
             log::trace!(
                 "tp({}): no output links for {} destination",
                 self.name,
@@ -600,8 +599,9 @@ impl Transport {
         self.handler.lock().await.knows_destination(address)
     }
 
-    pub fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
-        // direct access to handler for testing purposes
+    #[cfg(test)]
+    pub(crate) fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
+        // Direct access to handler for in-crate unit tests.
         self.handler.clone()
     }
 }
@@ -809,8 +809,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
     if packet.header.destination_type == DestinationType::Single {
         let has_local_destination = handler
             .single_in_destinations
-            .get(&packet.destination)
-            .is_some();
+            .contains_key(&packet.destination);
 
         match decide_single_data_route(has_local_destination) {
             SingleDataRoute::DeliverLocal => {
@@ -818,8 +817,8 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 handler
                     .received_data_tx
                     .send(ReceivedData {
-                        destination: packet.destination.clone(),
-                        data: packet.data.clone(),
+                        destination: packet.destination,
+                        data: packet.data,
                     })
                     .ok();
             }
@@ -894,7 +893,7 @@ async fn handle_announce<'a>(
             AnnounceDiscoveryRoute::IgnoreKnownDestination => {}
         }
 
-        let transport_id = handler.config.identity.address_hash().clone();
+        let transport_id = *handler.config.identity.address_hash();
         let maybe_message = if handler.config.retransmit {
             handler.announce_table.new_packet(&dest_hash, &transport_id)
         } else {
@@ -913,7 +912,7 @@ async fn handle_announce<'a>(
 
         let _ = handler.announce_tx.send(AnnounceEvent {
             destination,
-            app_data: PacketDataBuffer::new_from_slice(&app_data),
+            app_data: PacketDataBuffer::new_from_slice(app_data),
         });
     }
 }
@@ -1102,7 +1101,7 @@ async fn handle_link_request_as_intermediate<'a>(
 async fn handle_link_request<'a>(
     packet: &Packet,
     iface: AddressHash,
-    mut handler: MutexGuard<'a, TransportHandler>,
+    handler: MutexGuard<'a, TransportHandler>,
 ) {
     let maybe_local_destination = handler
         .single_in_destinations
@@ -1179,7 +1178,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     }
 
     for addr in &links_to_remove {
-        handler.in_links.remove(&addr);
+        handler.in_links.remove(addr);
     }
 
     links_to_remove.clear();
@@ -1227,7 +1226,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     }
 
     for addr in &links_to_remove {
-        handler.out_links.remove(&addr);
+        handler.out_links.remove(addr);
     }
 }
 
@@ -1251,7 +1250,7 @@ async fn retransmit_announces<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
     retransmit_old: bool,
 ) {
-    let transport_id = handler.config.identity.address_hash().clone();
+    let transport_id = *handler.config.identity.address_hash();
     let messages = handler.announce_table.to_retransmit(&transport_id);
 
     for message in messages {
@@ -1264,24 +1263,6 @@ async fn retransmit_announces<'a>(
         for message in messages {
             handler.send(message).await;
         }
-    }
-}
-
-fn create_retransmit_packet(packet: &Packet) -> Packet {
-    Packet {
-        header: Header {
-            ifac_flag: packet.header.ifac_flag,
-            header_type: packet.header.header_type,
-            propagation_type: packet.header.propagation_type,
-            destination_type: packet.header.destination_type,
-            packet_type: packet.header.packet_type,
-            hops: packet.header.hops + 1,
-        },
-        ifac: packet.ifac,
-        destination: packet.destination,
-        transport: packet.transport,
-        context: packet.context,
-        data: packet.data,
     }
 }
 
@@ -1579,12 +1560,14 @@ mod tests {
 
         handle_announce(&announce, handler.lock().await, next_hop_iface).await;
 
-        let mut data_packet: Packet = Default::default();
-        data_packet.data = PacketDataBuffer::new_from_slice(b"foo");
-        data_packet.destination = destination;
-        let duplicate: Packet = data_packet.clone();
+        let data_packet = Packet {
+            data: PacketDataBuffer::new_from_slice(b"foo"),
+            destination,
+            ..Default::default()
+        };
+        let duplicate: Packet = data_packet;
 
-        let mut different_packet = data_packet.clone();
+        let mut different_packet = data_packet;
         different_packet.data = PacketDataBuffer::new_from_slice(b"bar");
 
         assert_ne!(

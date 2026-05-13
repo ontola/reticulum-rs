@@ -637,8 +637,8 @@ mod tests {
             Some(AddressHash::new([4u8; 16]))
         );
         assert_eq!(input.entry_received_from, observation.entry_received_from);
-        assert_eq!(input.has_local_destination, true);
-        assert_eq!(input.retransmit_enabled, false);
+        assert!(input.has_local_destination);
+        assert!(!input.retransmit_enabled);
         assert_eq!(input.known_hops, observation.known_hops);
     }
 

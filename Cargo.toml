@@ -114,6 +114,21 @@ embassy-virtual = [
   "embassy-time/std",
   "embassy-sync/std",
 ]
+# std + Embassy for host mesh-sim: thread-local Spawner per OS thread (see async_backend).
+embassy-virtual-mt = [
+  "std",
+  "alloc",
+  "dep:embassy-executor",
+  "dep:embassy-time",
+  "dep:embassy-sync",
+  "dep:futures",
+  "embassy-executor/arch-std",
+  "embassy-executor/executor-thread",
+  # Large enough for mesh-sim sharded runs (`pool_size` task types + many `EmbeddedTransport` stacks per executor).
+  "embassy-executor/task-arena-size-1048576",
+  "embassy-time/std",
+  "embassy-sync/std",
+]
 
 [build-dependencies]
 tonic-build = "0.13.0"

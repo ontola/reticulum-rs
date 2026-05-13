@@ -18,6 +18,8 @@
 //!
 //! This is used internally by the Transport to manage link state.
 
+#![allow(dead_code)] // Link metadata fields reserved for future validation / debugging surfaces.
+
 use crate::async_backend::time::{Duration, Instant};
 use std::collections::HashMap;
 
@@ -131,7 +133,7 @@ impl LinkTable {
     /// The original destination if the link is validated
     pub fn original_destination(&self, link_id: &LinkId) -> Option<AddressHash> {
         self.0
-            .get(&link_id)
+            .get(link_id)
             .filter(|e| e.validated)
             .map(|e| e.original_destination)
     }
@@ -188,7 +190,7 @@ impl LinkTable {
             } else {
                 // Remove unvalidated links that timed out
                 if entry.proof_timeout <= now {
-                    stale.push(link_id.clone());
+                    stale.push(*link_id);
                 }
             }
         }

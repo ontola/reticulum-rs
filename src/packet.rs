@@ -322,12 +322,12 @@ impl Header {
     /// [IFAC (1 bit)] [Type (1 bit)] [Prop (2 bits)] [Dest (2 bits)] [Packet (2 bits)]
     /// ```
     pub fn to_meta(&self) -> u8 {
-        let meta = (self.ifac_flag as u8) << 7
+        
+        (self.ifac_flag as u8) << 7
             | (self.header_type as u8) << 6
             | (self.propagation_type as u8) << 4
             | (self.destination_type as u8) << 2
-            | (self.packet_type as u8) << 0;
-        meta
+            | (self.packet_type as u8)
     }
 
     /// Creates a header from a metadata byte.
@@ -345,7 +345,7 @@ impl Header {
             header_type: HeaderType::from(meta >> 6),
             propagation_type: PropagationType::from(meta >> 4),
             destination_type: DestinationType::from(meta >> 2),
-            packet_type: PacketType::from(meta >> 0),
+            packet_type: PacketType::from(meta),
             hops: 0,
         }
     }
@@ -465,9 +465,9 @@ impl Packet {
     pub fn hash(&self) -> Hash {
         Hash::new(
             Hash::generator()
-                .chain_update(&[self.header.to_meta() & 0b00001111])
+                .chain_update([self.header.to_meta() & 0b00001111])
                 .chain_update(self.destination.as_slice())
-                .chain_update(&[self.context as u8])
+                .chain_update([self.context as u8])
                 .chain_update(self.data.as_slice())
                 .finalize()
                 .into(),

@@ -265,13 +265,13 @@ impl InterfaceManager {
 
         let inner = Arc::new(StdMutex::new(inner));
 
-        let context = InterfaceContext::<T> {
+        
+
+        InterfaceContext::<T> {
             inner: inner.clone(),
             channel,
             cancel: self.cancel.clone(),
-        };
-
-        context
+        }
     }
 
     /// Spawns an interface worker task.
@@ -294,7 +294,7 @@ impl InterfaceManager {
         R::Output: Send + 'static,
     {
         let context = self.new_context(inner);
-        let address = context.channel.address().clone();
+        let address = *context.channel.address();
 
         spawn(worker(context));
 
@@ -338,7 +338,7 @@ impl InterfaceManager {
             };
 
             if should_send && !iface.stop.is_cancelled() {
-                let _ = iface.tx_send.send(message.clone()).await;
+                let _ = iface.tx_send.send(message).await;
             }
         }
     }

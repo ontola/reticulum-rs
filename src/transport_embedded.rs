@@ -10,6 +10,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+#[cfg(feature = "embassy-virtual-mt")]
+use crate::async_backend::embassy::{broadcast, spawn, CancellationToken};
+
+#[cfg(not(feature = "embassy-virtual-mt"))]
 use crate::async_backend::{broadcast, spawn, CancellationToken};
 use crate::hash::AddressHash;
 use crate::iface_messages::{RxMessage, TxMessage, TxMessageType};
@@ -30,16 +34,19 @@ use crate::transport_engine::{
     StagedPathRequestEgressDecision, STAGE_D_SYNTH_PATH_REQUEST_PAYLOAD,
 };
 
-/// Queue a Type2 forward on `egress_tx`, matching std `PathTable::handle_inbound_packet` + `Direct(iface)`.
+/// Queue a Type2 forward on `egress_tx`, matching std `PathTable::handle_inbound_packet` + `Direct(entry.iface)`.
+///
+/// [`queue_prepared_direct`] must use the **outgoing interface** (next hop on the wire), which matches
+/// [`PathEntry::iface`]. The prior bug passed the ingress source, which breaks multi-hop simulators
+/// that route `TxMessageType::Direct` by peer address.
 fn queue_path_table_forward(
     egress_tx: &broadcast::Sender<TxMessage>,
     egress_generated_count: &Arc<AtomicU32>,
     egress_dropped_count: &Arc<AtomicU32>,
     packet: &Packet,
     next_hop: AddressHash,
-    ingress_iface: AddressHash,
 ) -> bool {
-    if ingress_iface == AddressHash::new_empty() {
+    if next_hop == AddressHash::new_empty() {
         return false;
     }
     let out = build_packet_forward_type2(packet, next_hop);
@@ -48,7 +55,7 @@ fn queue_path_table_forward(
         egress_generated_count,
         egress_dropped_count,
         out,
-        ingress_iface,
+        next_hop,
     )
 }
 
@@ -79,6 +86,7 @@ fn queue_prepared_direct(
 
 /// Tiny typed command channel for Stage D runner behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // `PacketDataBuffer` variant is large; kept `Copy` for ergonomics.
 pub enum EmbeddedCommand {
     /// Request that the runner emits a small egress probe packet.
     EmitProbe { destination: AddressHash },
@@ -374,7 +382,9 @@ impl EmbeddedTransport {
                     if let Ok(msg) = ingress_rx.recv().await {
                         let source_address = msg.address;
                         let destination = msg.packet.destination;
-                        if source_address != AddressHash::new_empty() {
+                        if source_address != AddressHash::new_empty()
+                            && msg.packet.header.packet_type == PacketType::Announce
+                        {
                             if let Some(pos) = path_received_from
                                 .iter()
                                 .position(|(dest, _)| *dest == destination)
@@ -638,7 +648,6 @@ impl EmbeddedTransport {
                                                     &egress_dropped_count,
                                                     &msg.packet,
                                                     nh,
-                                                    source_address,
                                                 );
                                                 if forward_queued {
                                                     data_forward_queued_count
@@ -759,7 +768,6 @@ impl EmbeddedTransport {
                                                     &egress_dropped_count,
                                                     &msg.packet,
                                                     nh,
-                                                    source_address,
                                                 );
                                                 if forward_queued {
                                                     link_request_forward_queued_count

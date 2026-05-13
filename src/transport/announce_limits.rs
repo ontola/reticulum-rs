@@ -137,7 +137,7 @@ impl AnnounceLimits {
 
         // Create new entry with default limits
         self.limits.insert(
-            destination.clone(),
+            *destination,
             AnnounceLimitEntry::new(Default::default()),
         );
 

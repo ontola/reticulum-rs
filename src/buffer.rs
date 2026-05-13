@@ -181,6 +181,11 @@ impl<const N: usize> StaticBuffer<N> {
         self.len
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Writes data to the buffer and returns self for chaining.
     ///
     /// This method attempts to write the entire data slice to the buffer.
@@ -346,7 +351,7 @@ impl<const N: usize> StaticBuffer<N> {
             return Err(RnsError::InvalidArgument);
         }
 
-        self.len = self.len - mid;
+        self.len -= mid;
 
         self.buffer.rotate_left(mid);
 

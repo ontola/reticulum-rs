@@ -43,7 +43,6 @@ use x25519_dalek::StaticSecret;
 
 use crate::{
     buffer::OutputBuffer,
-    destination::Destination,
     error::RnsError,
     hash::{AddressHash, Hash, ADDRESS_HASH_SIZE, HASH_SIZE},
     identity::{DecryptIdentity, DerivedKey, EncryptIdentity, Identity, PrivateIdentity},
@@ -118,22 +117,13 @@ impl LinkPayload {
         Self { buffer, len }
     }
 
-    /// Creates a link payload from a vector.
+    /// Creates a link payload from bytes (alias for [`Self::new_from_slice`]).
     ///
     /// # Arguments
     ///
-    /// * `data` - The vector of data to store
-    pub fn new_from_vec(data: &Vec<u8>) -> Self {
-        let mut buffer = [0u8; PACKET_MDU];
-
-        for i in 0..min(buffer.len(), data.len()) {
-            buffer[i] = data[i];
-        }
-
-        Self {
-            buffer,
-            len: data.len(),
-        }
+    /// * `data` - Source bytes
+    pub fn new_from_vec(data: &[u8]) -> Self {
+        Self::new_from_slice(data)
     }
 
     /// Returns the length of the payload data.
@@ -141,9 +131,20 @@ impl LinkPayload {
         self.len
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Returns the payload data as a slice.
     pub fn as_slice(&self) -> &[u8] {
         &self.buffer[..self.len]
+    }
+}
+
+impl Default for LinkPayload {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -164,9 +165,9 @@ impl From<&Packet> for LinkId {
 
         AddressHash::new_from_hash(&Hash::new(
             Hash::generator()
-                .chain_update(&[packet.header.to_meta() & 0b00001111])
+                .chain_update([packet.header.to_meta() & 0b00001111])
                 .chain_update(packet.destination.as_slice())
-                .chain_update(&[packet.context as u8])
+                .chain_update([packet.context as u8])
                 .chain_update(hashable_data)
                 .finalize()
                 .into(),
@@ -175,6 +176,7 @@ impl From<&Packet> for LinkId {
 }
 
 /// Result of handling a packet on a link.
+#[allow(clippy::large_enum_variant)]
 pub enum LinkHandleResult {
     /// No action needed.
     None,
@@ -188,6 +190,7 @@ pub enum LinkHandleResult {
 
 /// Events that can occur on a link.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum LinkEvent {
     /// Link has been activated.
     Activated,
@@ -371,7 +374,9 @@ impl Link {
         packet_data.safe_write(&signature.to_bytes()[..]);
         packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
 
-        let packet = Packet {
+        
+
+        Packet {
             header: Header {
                 packet_type: PacketType::Proof,
                 ..Default::default()
@@ -381,9 +386,7 @@ impl Link {
             transport: None,
             context: PacketContext::LinkRequestProof,
             data: packet_data,
-        };
-
-        packet
+        }
     }
 
     /// Handles an incoming data packet on this link.
@@ -450,7 +453,7 @@ impl Link {
                         Ok(dest_bytes) => {
                             let link_id = LinkId::new(dest_bytes);
                             if self.id == link_id {
-                                let _ = self.close();
+                                self.close();
                             }
                         }
                     }
@@ -480,9 +483,9 @@ impl Link {
         }
 
         match packet.header.packet_type {
-            PacketType::Data => return self.handle_data_packet(packet, out_link),
-            PacketType::Proof => return self.handle_proof_packet(packet),
-            _ => return LinkHandleResult::None,
+            PacketType::Data => self.handle_data_packet(packet, out_link),
+            PacketType::Proof => self.handle_proof_packet(packet),
+            _ => LinkHandleResult::None,
         }
     }
 
@@ -513,7 +516,7 @@ impl Link {
             }
         }
 
-        return LinkHandleResult::None;
+        LinkHandleResult::None
     }
 
     /// Creates a data packet to send over this link.
@@ -683,7 +686,7 @@ impl Link {
 
         self.derived_key = self
             .priv_identity
-            .derive_key(&self.peer_identity.public_key, Some(&self.id.as_slice()));
+            .derive_key(&self.peer_identity.public_key, Some(self.id.as_slice()));
     }
 
     /// Posts an event to the event channel.

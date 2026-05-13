@@ -119,3 +119,9 @@ impl LinkMap {
         self.map.remove(address);
     }
 }
+
+impl Default for LinkMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}

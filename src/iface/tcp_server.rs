@@ -85,7 +85,7 @@ impl TcpServer {
                 .await
                 .map_err(|_| RnsError::ConnectionError);
 
-            if let Err(_) = listener {
+            if listener.is_err() {
                 log::warn!("tcp_server: couldn't bind to <{}>", addr);
                 time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;

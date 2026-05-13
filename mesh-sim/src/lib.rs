@@ -8,8 +8,12 @@
 //! [`BenchmarkParams`], [`run_line_announce_benchmark`], and [`StabilityMetrics`].
 //! Run `cargo bench -p reticulum-mesh-sim --bench mesh_stress` for Criterion timing.
 //!
+//! **Many nodes + real `EmbeddedTransport`:** [`embassy_mesh::run_line_scale_harness`] shards nodes across workers (each worker = one `Executor`; see [`embassy_mesh::MAX_NODES_PER_EMBASSY_SHARD`]). **Very large (10k+)** tick-level studies: [`MeshSim`] / [`run_line_announce_benchmark`].
+//!
 //! **Large meshes (1k–10k+ nodes):** use a `--release` binary; broadcasts use a
 //! per-tick spatial grid and `Arc` shared packets to avoid naive full-mesh cost and buffer clones per neighbor.
+
+pub mod embassy_mesh;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -376,6 +380,70 @@ pub fn run_line_announce_benchmark(params: &BenchmarkParams) -> BenchmarkReport 
     }
 }
 
+// --- LoRa-class “realistic enough for MeshSim” presets -------------------------------------------
+
+/// Gross PHY bitrate used in [`lora_realistic_line_benchmark`] (matches `lora_sweep` / `rf_compare` class).
+pub const LORA_CLASS_BITRATE_BPS: u64 = 10_000;
+
+/// Simulated tick duration for [`lora_realistic_line_benchmark`]: **50 ms** per tick (LoRa airtime + MCU quantised time).
+pub const LORA_CLASS_TICK_US: u64 = 50_000;
+
+/// On-air bytes debited per frame for medium budgeting (short MAC / SF-class framing, not full logical announce size).
+pub const LORA_CLASS_ON_AIR_BYTES: usize = 12;
+
+/// Line topology spacing for LoRa presets in this crate (**meters**).
+pub const LORA_LINE_SPACING_M: f32 = 45.0;
+
+/// One-hop nominal range for LoRa presets (**meters**): ~2–3 line neighbors at [`LORA_LINE_SPACING_M`].
+pub const LORA_LINE_RANGE_M: f32 = 130.0;
+
+/// Ticks between periodic announces per node in [`lora_realistic_line_benchmark`] (`300` × 50 ms ≈ **15 s** simulated time).
+pub const LORA_LINE_ANNOUNCE_INTERVAL_TICKS: Tick = 300;
+
+/// Build [`BenchmarkParams`] for a **calibrated** LoRa-class line: bitrate-limited medium, staggered announces,
+/// short on-air debit — same knobs as the calibrated **B)** branch in `src/bin/lora_sweep.rs`.
+///
+/// This is still [`MeshSim`] semantics (toy routing from direct announces), but the **RF budget and cadence**
+/// are meant to resemble constrained LoRa control-plane load, not infinite Wi-Fi.
+#[must_use]
+pub fn lora_realistic_line_params(nodes: usize, ticks: Tick) -> BenchmarkParams {
+    BenchmarkParams {
+        nodes,
+        ticks,
+        radio_range: LORA_LINE_RANGE_M,
+        spacing: LORA_LINE_SPACING_M,
+        memory: MeshMemoryBudget {
+            inbox_limit: 512,
+            route_table_limit: nodes.max(1),
+            air_queue_limit: 250_000,
+        },
+        bandwidth: MeshBandwidthBudget {
+            packets_per_tick: 64,
+            latency_ticks: 1,
+            announce_interval: LORA_LINE_ANNOUNCE_INTERVAL_TICKS,
+        },
+        medium_throughput_bps: Some(LORA_CLASS_BITRATE_BPS),
+        tick_duration_us: LORA_CLASS_TICK_US,
+        medium_bit_bucket_max: Some(200_000),
+        stagger_announces: true,
+        medium_on_air_bytes_override: Some(LORA_CLASS_ON_AIR_BYTES),
+    }
+}
+
+/// Run [`run_line_announce_benchmark`] with [`lora_realistic_line_params`] (`nodes` ≥ 1).
+#[must_use]
+pub fn lora_realistic_line_benchmark(nodes: usize, ticks: Tick) -> BenchmarkReport {
+    assert!(nodes >= 1, "nodes must be >= 1");
+    let p = lora_realistic_line_params(nodes, ticks);
+    run_line_announce_benchmark(&p)
+}
+
+/// Convenience: **100 nodes** on the LoRa line (see [`lora_realistic_line_benchmark`]).
+#[must_use]
+pub fn lora_realistic_100_node_line_benchmark(ticks: Tick) -> BenchmarkReport {
+    lora_realistic_line_benchmark(100, ticks)
+}
+
 #[derive(Debug, Clone)]
 struct RouteEntry {
     destination: AddressHash,
@@ -732,7 +800,7 @@ impl MeshSim {
                     self.stats.record_drop(DropReason::HopLimit);
                     return;
                 }
-                let mut pkt = (*frame.packet).clone();
+                let mut pkt = *frame.packet;
                 pkt.header.hops += 1;
                 let forwarded = Frame {
                     previous_hop: node_id,

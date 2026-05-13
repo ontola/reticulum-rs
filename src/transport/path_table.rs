@@ -19,6 +19,8 @@
 //!
 //! This is used internally by the Transport to manage routing state.
 
+#![allow(dead_code)] // Path entry fields and lookup helpers reserved for tooling / tighter integration.
+
 use std::collections::HashMap;
 
 use crate::async_backend::time::Instant;

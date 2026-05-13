@@ -49,9 +49,12 @@ pub use std_backend::*;
 
 // --- embedded backend (Embassy) --------------------------------------------
 
-#[cfg(all(
-    not(feature = "std"),
-    any(feature = "embedded", feature = "embassy-virtual")
+#[cfg(any(
+    all(
+        not(feature = "std"),
+        any(feature = "embedded", feature = "embassy-virtual"),
+    ),
+    feature = "embassy-virtual-mt",
 ))]
 mod embedded_backend {
     extern crate alloc;
@@ -129,22 +132,51 @@ mod embedded_backend {
         }
     }
 
+    impl Default for CancellationToken {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     use embassy_executor::raw::TaskPool;
     use embassy_executor::Spawner;
 
-    // `Spawner` is not `Send`, so it cannot live in `Mutex`/`RefCell` behind a `Sync` static.
-    // On single-core ESP32-S3 + Embassy this is only touched from the executor thread.
+    // Single global spawner (true embedded / single-thread virtual).
+    #[cfg(all(
+        any(feature = "embedded", feature = "embassy-virtual"),
+        not(feature = "embassy-virtual-mt"),
+    ))]
     static mut SPAWNER: Option<Spawner> = None;
+
+    // Per-OS-thread spawner for `embassy-virtual-mt` (one `Executor` per mesh node thread).
+    #[cfg(feature = "embassy-virtual-mt")]
+    thread_local! {
+        static SPAWNER_TLS: std::cell::RefCell<Option<Spawner>> = const { std::cell::RefCell::new(None) };
+    }
 
     /// Register the Embassy [`Spawner`] once before anything calls [`spawn`].
     ///
     /// Call this from `#[embassy_executor::main] async fn main(spawner: Spawner, ...) { ... }`
     /// (or equivalent) before constructing types that spawn background work (e.g. transport).
     ///
+    /// When built with **`embassy-virtual-mt`**, call this inside each thread's
+    /// `Executor::run` init closure so mesh nodes do not share one global spawner.
+    ///
     /// # Safety
     ///
-    /// Must be called only during board initialization (single executor thread), before any
-    /// concurrent use of [`spawn`].
+    /// For the non-`embassy-virtual-mt` build: must be called only during board initialization
+    /// (single executor thread), before any concurrent use of [`spawn`].
+    #[cfg(feature = "embassy-virtual-mt")]
+    pub fn set_spawner(spawner: Spawner) {
+        SPAWNER_TLS.with(|c| {
+            *c.borrow_mut() = Some(spawner);
+        });
+    }
+
+    #[cfg(all(
+        any(feature = "embedded", feature = "embassy-virtual"),
+        not(feature = "embassy-virtual-mt"),
+    ))]
     #[allow(static_mut_refs)] // Single-threaded executor init; avoids Mutex<Spawner> (!Send).
     pub fn set_spawner(spawner: Spawner) {
         unsafe {
@@ -161,6 +193,28 @@ mod embedded_backend {
     /// # Panics
     ///
     /// Panics if [`set_spawner`] was not called, or if the executor rejects the task.
+    #[cfg(feature = "embassy-virtual-mt")]
+    pub fn spawn<F>(fut: F)
+    where
+        F: core::future::Future<Output = ()> + 'static,
+    {
+        let pool: &'static TaskPool<F, 1> = Box::leak(Box::new(TaskPool::new()));
+        let token = pool.spawn(move || fut);
+        SPAWNER_TLS.with(|c| {
+            let b = c.borrow();
+            let spawner = b.as_ref().expect(
+                "reticulum: async_backend::set_spawner must be called before spawn on embedded",
+            );
+            spawner
+                .spawn(token)
+                .expect("reticulum: embassy_executor::Spawner::spawn failed");
+        });
+    }
+
+    #[cfg(all(
+        any(feature = "embedded", feature = "embassy-virtual"),
+        not(feature = "embassy-virtual-mt"),
+    ))]
     #[allow(static_mut_refs)] // Single-threaded executor; `Spawner` is not `Send`.
     pub fn spawn<F>(fut: F)
     where
@@ -182,6 +236,9 @@ mod embedded_backend {
     /// Same role as `tokio::select!` for the patterns used in `transport.rs`.
     ///
     /// Implemented with `futures::select_biased!` (works on `no_std` + `alloc`).
+    /// Not exported when `std` is enabled (including `embassy-virtual-mt`): Tokio's `async_select`
+    /// from [`std_backend`] is the single `crate::async_select` definition.
+    #[cfg(not(feature = "std"))]
     #[macro_export]
     macro_rules! async_select {
         ($($t:tt)*) => {
@@ -205,7 +262,10 @@ mod embedded_backend {
         use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
         use embassy_sync::channel;
 
-        const DEFAULT_CAPACITY: usize = 16;
+        // `embassy_sync` channel size is this const, not the `channel(capacity)` argument (yet).
+        // 256 was observed to break `embassy-time`/`executor-thread` integration tests on macOS (timeouts);
+        // 64 is enough headroom over 16 for mesh workloads without tripping that failure mode.
+        const DEFAULT_CAPACITY: usize = 64;
 
         #[derive(Clone)]
         pub struct Sender<T: 'static> {
@@ -258,7 +318,7 @@ mod embedded_backend {
         impl<T: 'static> Sender<T> {
             pub fn subscribe(&self) -> Receiver<T> {
                 Receiver {
-                    rx: self.rx_for_subscribe.clone(),
+                    rx: self.rx_for_subscribe,
                 }
             }
 
@@ -308,7 +368,7 @@ mod embedded_backend {
         use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
         use embassy_sync::channel;
 
-        const DEFAULT_CAPACITY: usize = 16;
+        const DEFAULT_CAPACITY: usize = 64;
 
         #[derive(Clone)]
         pub struct Sender<T: 'static> {
@@ -374,8 +434,14 @@ mod embedded_backend {
     }
 }
 
+#[cfg(feature = "embassy-virtual-mt")]
+pub mod embassy {
+    //! Embassy executor + competing channels (`transport_embedded`). The crate root still exposes Tokio from `std_backend` for [`crate::transport`].
+    pub use super::embedded_backend::*;
+}
+
 #[cfg(all(
     not(feature = "std"),
-    any(feature = "embedded", feature = "embassy-virtual")
+    any(feature = "embedded", feature = "embassy-virtual"),
 ))]
 pub use embedded_backend::*;

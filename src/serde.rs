@@ -148,7 +148,7 @@ impl AddressHash {
     pub fn deserialize(buffer: &mut InputBuffer) -> Result<AddressHash, RnsError> {
         let mut address = AddressHash::new_empty();
 
-        buffer.read(&mut address.as_mut_slice())?;
+        buffer.read(address.as_mut_slice())?;
 
         Ok(address)
     }
@@ -245,7 +245,7 @@ impl Packet {
             data: StaticBuffer::new(),
         };
 
-        buffer.read(&mut packet.data.accuire_buf(buffer.bytes_left()))?;
+        buffer.read(packet.data.accuire_buf(buffer.bytes_left()))?;
 
         Ok(packet)
     }

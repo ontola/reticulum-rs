@@ -143,7 +143,7 @@ impl Hash {
     /// let hash = Hash::new(data);
     /// ```
     pub const fn new(hash: [u8; HASH_SIZE]) -> Self {
-        Self { 0: hash }
+        Self(hash)
     }
 
     /// Creates a new Hash with all zeros.
@@ -157,9 +157,7 @@ impl Hash {
     /// assert_eq!(hash.as_slice(), &[0u8; 32]);
     /// ```
     pub const fn new_empty() -> Self {
-        Self {
-            0: [0u8; HASH_SIZE],
-        }
+        Self([0u8; HASH_SIZE])
     }
 
     /// Creates a Hash by hashing the input data.
@@ -181,7 +179,7 @@ impl Hash {
     pub fn new_from_slice(data: &[u8]) -> Self {
         let mut hash = [0u8; HASH_SIZE];
         create_hash(data, &mut hash);
-        Self { 0: hash }
+        Self(hash)
     }
 
     /// Creates a Hash from random data.
@@ -208,7 +206,7 @@ impl Hash {
         rng.fill_bytes(&mut data[..]);
 
         create_hash(&data, &mut hash);
-        Self { 0: hash }
+        Self(hash)
     }
 
     /// Returns a slice view of the hash data.
@@ -278,7 +276,7 @@ impl AddressHash {
     /// let addr = AddressHash::new(data);
     /// ```
     pub const fn new(hash: [u8; ADDRESS_HASH_SIZE]) -> Self {
-        Self { 0: hash }
+        Self(hash)
     }
 
     /// Creates an AddressHash by hashing the input data.
@@ -300,7 +298,7 @@ impl AddressHash {
     pub fn new_from_slice(data: &[u8]) -> Self {
         let mut hash = [0u8; ADDRESS_HASH_SIZE];
         create_hash(data, &mut hash);
-        Self { 0: hash }
+        Self(hash)
     }
 
     /// Creates an AddressHash from a full Hash.
@@ -324,7 +322,7 @@ impl AddressHash {
     pub fn new_from_hash(hash: &Hash) -> Self {
         let mut address_hash = [0u8; ADDRESS_HASH_SIZE];
         address_hash.copy_from_slice(&hash.0[0..ADDRESS_HASH_SIZE]);
-        Self { 0: address_hash }
+        Self(address_hash)
     }
 
     /// Creates a random AddressHash.
@@ -379,7 +377,7 @@ impl AddressHash {
             bytes[i] = u8::from_str_radix(&hex_string[i * 2..(i * 2) + 2], 16).unwrap();
         }
 
-        Ok(Self { 0: bytes })
+        Ok(Self(bytes))
     }
 
     /// Creates an empty AddressHash (all zeros).
@@ -393,9 +391,7 @@ impl AddressHash {
     /// assert_eq!(addr.as_slice(), &[0u8; 16]);
     /// ```
     pub const fn new_empty() -> Self {
-        Self {
-            0: [0u8; ADDRESS_HASH_SIZE],
-        }
+        Self([0u8; ADDRESS_HASH_SIZE])
     }
 
     /// Returns a slice view of the address hash data.
@@ -430,6 +426,11 @@ impl AddressHash {
     /// ```
     pub const fn len(&self) -> usize {
         self.0.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::new_empty()
     }
 
     /// Converts the address hash to a hexadecimal string.

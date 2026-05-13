@@ -226,9 +226,9 @@ pub fn link_id_from_link_request_packet(packet: &Packet) -> AddressHash {
 
     AddressHash::new_from_hash(&Hash::new(
         Hash::generator()
-            .chain_update(&[packet.header.to_meta() & 0b00001111])
+            .chain_update([packet.header.to_meta() & 0b00001111])
             .chain_update(packet.destination.as_slice())
-            .chain_update(&[packet.context as u8])
+            .chain_update([packet.context as u8])
             .chain_update(hashable_data)
             .finalize()
             .into(),
@@ -900,6 +900,7 @@ pub fn decide_proof_link_followup(link_activated: bool) -> ProofLinkFollowup {
 
 /// Follow-up action transport should perform after link-table proof handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ProofHandleFollowup {
     SendDirect { packet: Packet, iface: AddressHash },
     NoOp,
@@ -918,6 +919,7 @@ pub fn decide_proof_handle_followup(
 /// Follow-up action transport should perform after `link.handle_packet(...)`.
 #[cfg(feature = "std")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum LinkHandleFollowup {
     /// Send a keep-alive response back to the peer.
     SendKeepAliveResponse,

@@ -2058,6 +2058,8 @@ name = "reticulum-mesh-sim"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "embassy-executor",
+ "embassy-time",
  "reticulum",
 ]
 

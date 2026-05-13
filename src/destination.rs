@@ -470,7 +470,7 @@ impl Destination<PrivateIdentity, Input, Single> {
     /// ```
     pub fn new(identity: PrivateIdentity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
-        let pub_identity = identity.as_identity().clone();
+        let pub_identity = *identity.as_identity();
 
         Self {
             direction: PhantomData,
@@ -527,7 +527,7 @@ impl Destination<PrivateIdentity, Input, Single> {
         #[cfg(feature = "std")]
         let rand_hash_storage = {
             let timestamp =
-                (std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as u64).to_be_bytes();
+                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs().to_be_bytes();
             [
                 &random_hash.as_slice()[..RAND_HASH_LENGTH / 2],
                 &timestamp[3..],
@@ -621,12 +621,9 @@ impl Destination<PrivateIdentity, Input, Single> {
             return DestinationHandleStatus::None;
         }
 
-        match packet.header.packet_type {
-            PacketType::LinkRequest => {
-                // TODO: check prove strategy
-                return DestinationHandleStatus::LinkProof;
-            }
-            _ => {}
+        if packet.header.packet_type == PacketType::LinkRequest {
+            // TODO: check prove strategy
+            return DestinationHandleStatus::LinkProof;
         }
 
         DestinationHandleStatus::None

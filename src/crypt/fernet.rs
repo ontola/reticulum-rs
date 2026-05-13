@@ -182,7 +182,7 @@ impl<'a> From<&'a str> for PlainText<'a> {
     /// assert_eq!(pt.as_slice(), b"hello world");
     /// ```
     fn from(item: &'a str) -> Self {
-        Self { 0: item.as_bytes() }
+        Self(item.as_bytes())
     }
 }
 
@@ -199,7 +199,7 @@ impl<'a> From<&'a [u8]> for PlainText<'a> {
     /// assert_eq!(pt.as_slice(), b"binary data");
     /// ```
     fn from(item: &'a [u8]) -> Self {
-        Self { 0: item }
+        Self(item)
     }
 }
 
@@ -231,6 +231,11 @@ impl<'a> Token<'a> {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl<'a> From<&'a [u8]> for Token<'a> {
@@ -245,7 +250,7 @@ impl<'a> From<&'a [u8]> for Token<'a> {
     /// let token: Token = data.into();
     /// ```
     fn from(item: &'a [u8]) -> Self {
-        Self { 0: item }
+        Self(item)
     }
 }
 
@@ -307,7 +312,7 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
 
         Self {
             rng,
-            sign_key: sign_key_bytes.into(),
+            sign_key: sign_key_bytes,
             enc_key: enc_key_bytes.into(),
         }
     }
@@ -405,9 +410,7 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
         out_buf[out_len..out_len + tag.len()].copy_from_slice(tag.as_slice());
         out_len += tag.len();
 
-        Ok(Token {
-            0: &out_buf[..out_len],
-        })
+        Ok(Token(&out_buf[..out_len]))
     }
 
     /// Verifies the authenticity and integrity of a token.
@@ -464,7 +467,7 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
             == cmp::Ordering::Equal;
 
         if valid {
-            Ok(VerifiedToken { 0: token_data })
+            Ok(VerifiedToken(token_data))
         } else {
             Err(RnsError::IncorrectSignature)
         }
@@ -523,7 +526,7 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
             .decrypt_padded_b2b_mut::<Pkcs7>(ciphertext, out_buf)
             .map_err(|_| RnsError::CryptoError)?;
 
-        return Ok(PlainText { 0: msg });
+        Ok(PlainText(msg))
     }
 }
 
