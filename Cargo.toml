@@ -47,6 +47,7 @@ rand_core = { version = "0.6.4", default-features = false }
 tokio = { version = "1.44.2", features = ["full"], optional = true }
 tokio-stream = { version = "0.1.17", optional = true }
 tokio-util = { version = "0.7.15", optional = true }
+tokio-serial = { version = "5.4", optional = true }
 
 rmp = { version = "0.8.14", default-features = false }
 serde = { version = "1.0.219", default-features = false, features = ["derive", "alloc"] }
@@ -80,6 +81,7 @@ std = [
   "dep:tokio",
   "dep:tokio-stream",
   "dep:tokio-util",
+  "dep:tokio-serial",
   "dep:env_logger",
   "dep:tonic",
   "dep:prost",

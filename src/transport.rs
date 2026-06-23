@@ -143,6 +143,7 @@ pub struct TransportConfig {
 pub struct AnnounceEvent {
     pub destination: Arc<Mutex<SingleOutputDestination>>,
     pub app_data: PacketDataBuffer,
+    pub hops: u8,
 }
 
 pub(crate) struct TransportHandler {
@@ -913,6 +914,7 @@ async fn handle_announce<'a>(
         let _ = handler.announce_tx.send(AnnounceEvent {
             destination,
             app_data: PacketDataBuffer::new_from_slice(app_data),
+            hops: packet.header.hops,
         });
     }
 }

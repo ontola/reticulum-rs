@@ -37,6 +37,7 @@
 pub mod hdlc;
 
 pub mod kaonic;
+pub mod serial;
 pub mod tcp_client;
 pub mod tcp_server;
 pub mod udp;
