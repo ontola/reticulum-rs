@@ -190,7 +190,7 @@ impl AnnounceTable {
     }
 
     #[allow(clippy::wrong_self_convention)]
-    pub fn to_retransmit(&mut self, transport_id: &AddressHash) -> Vec<TxMessage> {
+    pub fn tx_to_retransmit(&mut self, transport_id: &AddressHash) -> Vec<TxMessage> {
         let mut messages = vec![];
         let mut completed = vec![];
 
@@ -237,7 +237,7 @@ impl AnnounceTable {
     }
 
     #[allow(clippy::wrong_self_convention)]
-    pub fn to_retransmit_old(&mut self, transport_id: &AddressHash) -> Vec<TxMessage> {
+    pub fn tx_to_retransmit_old(&mut self, transport_id: &AddressHash) -> Vec<TxMessage> {
         let mut messages = vec![];
 
         if let Some(ref cache) = self.cache.newer {

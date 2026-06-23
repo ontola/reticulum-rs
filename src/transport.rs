@@ -78,20 +78,6 @@ mod path_table;
 const PACKET_TRACE: bool = false;
 pub const PATHFINDER_M: usize = 128; // Max hops
 
-const INTERVAL_LINKS_CHECK: Duration = Duration::from_secs(1);
-const INTERVAL_INPUT_LINK_STALE: Duration = Duration::from_secs(10);
-const INTERVAL_INPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
-const INTERVAL_OUTPUT_LINK_RESTART: Duration = Duration::from_secs(60);
-const INTERVAL_OUTPUT_LINK_STALE: Duration = Duration::from_secs(10);
-const INTERVAL_OUTPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
-const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
-const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
-const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
-const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
-const INTERVAL_OLD_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(60);
-const INTERVAL_KEEP_PACKET_CACHED: Duration = Duration::from_secs(180);
-const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
-
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
 const KEEP_ALIVE_RESPONSE: u8 = 0xFE;
@@ -115,6 +101,43 @@ pub struct ReceivedData {
     pub data: PacketDataBuffer,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TimerConfig {
+    pub link_check: Duration,
+    pub in_link_stale: Duration,
+    pub in_link_close: Duration,
+    pub out_link_restart: Duration,
+    pub out_link_stale: Duration,
+    pub out_link_close: Duration,
+    pub out_link_repeat: Duration,
+    pub out_link_keep: Duration,
+    pub iface_cleanup: Duration,
+    pub announces_retransmit: Duration,
+    pub old_announces_retransmit: Duration,
+    pub keep_packet_cached: Duration,
+    pub packet_cache_cleanup: Duration,
+}
+
+impl Default for TimerConfig {
+    fn default() -> Self {
+        Self {
+            link_check: Duration::from_secs(1),
+            in_link_stale: Duration::from_secs(10),
+            in_link_close: Duration::from_secs(5),
+            out_link_restart: Duration::from_secs(60),
+            out_link_stale: Duration::from_secs(10),
+            out_link_close: Duration::from_secs(5),
+            out_link_repeat: Duration::from_secs(6),
+            out_link_keep: Duration::from_secs(5),
+            iface_cleanup: Duration::from_secs(10),
+            announces_retransmit: Duration::from_secs(1),
+            old_announces_retransmit: Duration::from_secs(60),
+            keep_packet_cached: Duration::from_secs(180),
+            packet_cache_cleanup: Duration::from_secs(90),
+        }
+    }
+}
+
 pub struct TransportConfig {
     name: String,
     identity: PrivateIdentity,
@@ -133,6 +156,8 @@ pub struct TransportConfig {
     /// Resend announces of remote destinations at a slower pace once
     /// the initial round of announces is over.
     announce_forever: bool,
+
+    timer_config: TimerConfig,
 
     /// The runtime used for spawning tasks and sleeping.
     /// Defaults to TokioRuntime if not specified.
@@ -195,6 +220,7 @@ impl TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            timer_config: TimerConfig::default(),
             runtime: TokioRuntime,
         }
     }
@@ -214,28 +240,48 @@ impl TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            timer_config: TimerConfig::default(),
             runtime,
         }
     }
 
-    pub fn set_retransmit(&mut self, retransmit: bool) {
+    pub fn set_retransmit(mut self, retransmit: bool) -> Self {
         self.retransmit = retransmit;
+        self
     }
 
-    pub fn set_broadcast(&mut self, broadcast: bool) {
+    pub fn set_broadcast(mut self, broadcast: bool) -> Self {
         self.broadcast = broadcast;
+        self
     }
 
-    pub fn set_reroute_eager(&mut self, reroute_eager: bool) {
+    pub fn set_reroute_eager(mut self, reroute_eager: bool) -> Self {
         self.reroute_eager = reroute_eager;
+        self
     }
 
-    pub fn set_restart_outlinks(&mut self, restart_outlinks: bool) {
+    pub fn set_restart_outlinks(mut self, restart_outlinks: bool) -> Self {
         self.restart_outlinks = restart_outlinks;
+        self
     }
 
-    pub fn set_announce_forever(&mut self, announce_forever: bool) {
+    pub fn set_announce_forever(mut self, announce_forever: bool) -> Self {
         self.announce_forever = announce_forever;
+        self
+    }
+
+    pub fn set_timer_config(mut self, timer_config: TimerConfig) -> Self {
+        self.timer_config = timer_config;
+        self
+    }
+
+    pub fn set_runtime(mut self, runtime: TokioRuntime) -> Self {
+        self.runtime = runtime;
+        self
+    }
+
+    pub fn build(self) -> Transport {
+        Transport::new(self)
     }
 }
 
@@ -249,6 +295,7 @@ impl Default for TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            timer_config: Default::default(),
             runtime: TokioRuntime,
         }
     }
@@ -406,13 +453,14 @@ impl Transport {
         let mut sent_packets = vec![];
         let handler = self.handler.lock().await;
         for link in handler.out_links.values() {
-            let link = link.lock().await;
+            let mut link = link.lock().await;
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
             {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
+                    link.touch();
                     sent_packets.push(packet.hash());
                 }
             }
@@ -433,7 +481,7 @@ impl Transport {
         let handler = self.handler.lock().await;
         let mut count = 0usize;
         for link in handler.in_links.values() {
-            let link = link.lock().await;
+            let mut link = link.lock().await;
 
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
@@ -441,6 +489,7 @@ impl Transport {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
+                    link.touch();
                     count += 1;
                 }
             }
@@ -1151,6 +1200,7 @@ async fn handle_link_request<'a>(
 }
 
 async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
+    let timer_config = handler.config.timer_config;
     let mut links_to_remove: Vec<AddressHash> = Vec::new();
 
     // Clean up input links
@@ -1159,8 +1209,8 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
         match decide_in_link_maintenance_action(
             link.status(),
             link.elapsed(),
-            INTERVAL_INPUT_LINK_STALE,
-            INTERVAL_INPUT_LINK_CLOSE,
+            timer_config.in_link_stale,
+            timer_config.in_link_close,
         ) {
             InLinkMaintenanceAction::MarkStale => link.stale(),
             InLinkMaintenanceAction::TeardownAndRemove => {
@@ -1192,10 +1242,10 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
             link.status(),
             link.elapsed(),
             handler.config.restart_outlinks,
-            INTERVAL_OUTPUT_LINK_STALE,
-            INTERVAL_OUTPUT_LINK_CLOSE,
-            INTERVAL_OUTPUT_LINK_RESTART,
-            INTERVAL_OUTPUT_LINK_REPEAT,
+            timer_config.out_link_stale,
+            timer_config.out_link_close,
+            timer_config.out_link_restart,
+            timer_config.out_link_repeat,
         ) {
             OutLinkMaintenanceAction::MarkStale => link.stale(),
             OutLinkMaintenanceAction::Restart => link.restart(),
@@ -1253,14 +1303,14 @@ async fn retransmit_announces<'a>(
     retransmit_old: bool,
 ) {
     let transport_id = *handler.config.identity.address_hash();
-    let messages = handler.announce_table.to_retransmit(&transport_id);
+    let messages = handler.announce_table.tx_to_retransmit(&transport_id);
 
     for message in messages {
         handler.send(message).await;
     }
 
     if retransmit_old {
-        let messages = handler.announce_table.to_retransmit_old(&transport_id);
+        let messages = handler.announce_table.tx_to_retransmit_old(&transport_id);
 
         for message in messages {
             handler.send(message).await;
@@ -1275,8 +1325,9 @@ async fn manage_transport(
 ) {
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
+    let timer_config = handler.lock().await.config.timer_config;
     let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
-        Some(time::Instant::now() - INTERVAL_OLD_ANNOUNCES_RETRANSMIT)
+        Some(time::Instant::now() - timer_config.old_announces_retransmit)
     } else {
         None
     };
@@ -1396,6 +1447,7 @@ async fn manage_transport(
     {
         let handler = handler.clone();
         let cancel = cancel.clone();
+        let link_check = timer_config.link_check;
 
         crate::async_backend::spawn(async move {
             loop {
@@ -1407,7 +1459,7 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_LINKS_CHECK) => {
+                    _ = time::sleep(link_check) => {
                         handle_check_links(handler.lock().await).await;
                     }
                 }
@@ -1418,6 +1470,7 @@ async fn manage_transport(
     {
         let handler = handler.clone();
         let cancel = cancel.clone();
+        let out_link_keep = timer_config.out_link_keep;
 
         crate::async_backend::spawn(async move {
             loop {
@@ -1429,7 +1482,7 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_OUTPUT_LINK_KEEP) => {
+                    _ = time::sleep(out_link_keep) => {
                         handle_keep_links(handler.lock().await).await;
                     }
                 }
@@ -1440,6 +1493,7 @@ async fn manage_transport(
     {
         let handler = handler.clone();
         let cancel = cancel.clone();
+        let iface_cleanup = timer_config.iface_cleanup;
 
         crate::async_backend::spawn(async move {
             loop {
@@ -1451,7 +1505,7 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_IFACE_CLEANUP) => {
+                    _ = time::sleep(iface_cleanup) => {
                         handle_cleanup(handler.lock().await).await;
                     }
                 }
@@ -1462,6 +1516,8 @@ async fn manage_transport(
     {
         let handler = handler.clone();
         let cancel = cancel.clone();
+        let packet_cache_cleanup = timer_config.packet_cache_cleanup;
+        let keep_packet_cached = timer_config.keep_packet_cached;
 
         crate::async_backend::spawn(async move {
             loop {
@@ -1473,14 +1529,14 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_PACKET_CACHE_CLEANUP) => {
+                    _ = time::sleep(packet_cache_cleanup) => {
                         let mut handler = handler.lock().await;
 
                         handler
                             .packet_cache
                             .lock()
                             .await
-                            .release(INTERVAL_KEEP_PACKET_CACHED);
+                            .release(keep_packet_cached);
 
                         handler.link_table.remove_stale();
                     },
@@ -1492,6 +1548,8 @@ async fn manage_transport(
     if retransmit {
         let handler = handler.clone();
         let cancel = cancel.clone();
+        let announces_retransmit = timer_config.announces_retransmit;
+        let old_announces_retransmit = timer_config.old_announces_retransmit;
 
         crate::async_backend::spawn(async move {
             loop {
@@ -1503,7 +1561,7 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
+                    _ = time::sleep(announces_retransmit) => {
                         let mut retransmit_old = false;
 
                         if let Some(instant) = last_retransmit_old {
@@ -1511,7 +1569,7 @@ async fn manage_transport(
                             let elapsed = now - instant;
                             if decide_old_announce_retransmit(
                                 elapsed,
-                                INTERVAL_OLD_ANNOUNCES_RETRANSMIT,
+                                old_announces_retransmit,
                             ) {
                                 retransmit_old = true;
                                 last_retransmit_old = Some(now);
@@ -1534,10 +1592,7 @@ mod tests {
 
     #[tokio::test]
     async fn drop_duplicates() {
-        let mut config: TransportConfig = Default::default();
-        config.set_retransmit(true);
-
-        let transport = Transport::new(config);
+        let transport = Transport::new(TransportConfig::default().set_retransmit(true));
         let handler = transport.get_handler();
 
         let _source1 = AddressHash::new_from_slice(&[1u8; 32]);

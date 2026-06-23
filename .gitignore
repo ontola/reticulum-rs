@@ -1,9 +1,10 @@
 .cache
 **/.DS_Store
-
 /target
 
 /meshnet-lab-master
 
 .vscode
-
+tests/rns-py-configs/**/interfaces
+tests/rns-py-configs/**/storage
+rust-analyzer.log

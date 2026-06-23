@@ -52,9 +52,9 @@ async fn main() {
 
     log::info!("Destination on last hop will be {}", last_hop_destination.desc);
 
-    let mut config = TransportConfig::new("server", &identity, false);
-    config.set_retransmit(true);
-    let mut transport = Transport::new(config);
+    let mut transport = Transport::new(
+        TransportConfig::new("server", &identity, false).set_retransmit(true),
+    );
 
     let our_address = format!("0.0.0.0:{}", our_hop + 5101);
 

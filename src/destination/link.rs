@@ -195,7 +195,7 @@ pub enum LinkEvent {
     /// Link has been activated.
     Activated,
     /// Data received on the link.
-    Data(LinkPayload),
+    Data(Box<LinkPayload>),
     /// Proof received for a message.
     Proof(Hash),
     /// Link has been closed.
@@ -346,9 +346,13 @@ impl Link {
 
         self.status = LinkStatus::Pending;
         self.id = LinkId::from(&packet);
-        self.request_time = Instant::now();
+        self.touch();
 
         packet
+    }
+
+    pub fn touch(&mut self) {
+        self.request_time = Instant::now();
     }
 
     /// Creates a proof packet for this link.
@@ -401,8 +405,10 @@ impl Link {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     log::trace!("link({}): data {}B", self.id, plain_text.len());
-                    self.request_time = Instant::now();
-                    self.post_event(LinkEvent::Data(LinkPayload::new_from_slice(plain_text)));
+                    self.touch();
+                    self.post_event(LinkEvent::Data(Box::new(LinkPayload::new_from_slice(
+                        plain_text,
+                    ))));
 
                     let proof = if self.proves_messages {
                         Some(self.message_proof(packet.hash()))
@@ -416,21 +422,21 @@ impl Link {
                 }
             }
             LinkDataAction::KeepAliveRequest => {
-                self.request_time = Instant::now();
+                self.touch();
                 log::trace!("link({}): keep-alive request", self.id);
                 return LinkHandleResult::KeepAlive;
             }
             LinkDataAction::KeepAliveResponse => {
                 log::trace!("link({}): keep-alive response", self.id);
-                self.request_time = Instant::now();
+                self.touch();
                 return LinkHandleResult::None;
             }
             LinkDataAction::Rtt => {
                 if !out_link {
                     let mut buffer = [0u8; PACKET_MDU];
                     if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
-                        if let Ok(rtt) = rmp::decode::read_f32(&mut &plain_text[..]) {
-                            self.rtt = Duration::from_secs_f32(rtt);
+                        if let Ok(rtt) = rmp::decode::read_f64(&mut &plain_text[..]) {
+                            self.rtt = Duration::from_secs_f64(rtt);
                         } else {
                             log::error!("link({}): failed to decode rtt", self.id);
                         }
@@ -644,11 +650,11 @@ impl Link {
 
     /// Creates an RTT measurement packet.
     pub fn create_rtt(&self) -> Packet {
-        let rtt = self.rtt.as_secs_f32();
+        let rtt = self.rtt.as_secs_f64();
         let mut buf = Vec::new();
         {
-            buf.reserve(4);
-            rmp::encode::write_f32(&mut buf, rtt).unwrap();
+            buf.reserve(8);
+            rmp::encode::write_f64(&mut buf, rtt).unwrap();
         }
 
         let mut packet_data = PacketDataBuffer::new();

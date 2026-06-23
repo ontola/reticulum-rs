@@ -103,26 +103,51 @@ impl TcpClient {
         let tx_channel = Arc::new(Mutex::new(tx_channel));
 
         let mut running = true;
-        loop {
+        'outer: loop {
             if !running || context.cancel.is_cancelled() {
                 break;
             }
 
-            let stream = {
-                match stream.take() {
-                    Some(stream) => {
-                        running = false;
-                        Ok(stream)
+            let stream = match stream.take() {
+                Some(stream) => {
+                    running = false;
+                    Ok(stream)
+                }
+                None => {
+                    let mut tx_channel = tx_channel.lock().await;
+
+                    async_select! {
+                        biased;
+                        _ = context.cancel.cancelled() => {
+                            break 'outer;
+                        }
+                        Some(_) = tx_channel.recv() => {
+                            continue;
+                        }
+                        result = TcpStream::connect(addr.clone()) => {
+                            result.map_err(|_| RnsError::ConnectionError)
+                        }
                     }
-                    None => TcpStream::connect(addr.clone())
-                        .await
-                        .map_err(|_| RnsError::ConnectionError),
                 }
             };
 
             if stream.is_err() {
                 log::info!("tcp_client: couldn't connect to <{}>", addr);
-                time::sleep(std::time::Duration::from_secs(5)).await;
+
+                loop {
+                    let mut tx_channel = tx_channel.lock().await;
+
+                    async_select! {
+                        biased;
+                        _ = context.cancel.cancelled() => {
+                            break 'outer;
+                        }
+                        Some(_) = tx_channel.recv() => {}
+                        _ = time::sleep(std::time::Duration::from_secs(5)) => {
+                            break;
+                        }
+                    }
+                }
                 continue;
             }
 

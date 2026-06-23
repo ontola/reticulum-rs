@@ -156,6 +156,21 @@ pub const RAND_HASH_LENGTH: usize = 10;
 pub const MIN_ANNOUNCE_DATA_LENGTH: usize =
     PUBLIC_KEY_LENGTH * 2 + NAME_HASH_LENGTH + RAND_HASH_LENGTH + SIGNATURE_LENGTH;
 
+fn announce_timestamp_bytes() -> [u8; 8] {
+    #[cfg(feature = "std")]
+    {
+        std::time::UNIX_EPOCH
+            .elapsed()
+            .unwrap()
+            .as_secs()
+            .to_be_bytes()
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        [0u8; 8]
+    }
+}
+
 /// A destination name derived from app_name and aspects.
 ///
 /// Destination names are hashed to create a compact identifier used
@@ -524,20 +539,12 @@ impl Destination<PrivateIdentity, Input, Single> {
         let mut packet_data = PacketDataBuffer::new();
 
         let random_hash = Hash::new_from_rand(rng);
-        #[cfg(feature = "std")]
-        let rand_hash_storage = {
-            let timestamp =
-                std::time::UNIX_EPOCH.elapsed().unwrap().as_secs().to_be_bytes();
-            [
-                &random_hash.as_slice()[..RAND_HASH_LENGTH / 2],
-                &timestamp[3..],
-            ]
-            .concat()
-        };
-        #[cfg(feature = "std")]
-        let rand_hash = rand_hash_storage.as_slice();
-        #[cfg(not(feature = "std"))]
-        let rand_hash = &random_hash.as_slice()[..RAND_HASH_LENGTH];
+        let timestamp = announce_timestamp_bytes();
+        let rand_hash = [
+            &random_hash.as_slice()[..RAND_HASH_LENGTH / 2],
+            &timestamp[3..],
+        ]
+        .concat();
 
         let pub_key = self.identity.as_identity().public_key_bytes();
         let verifying_key = self.identity.as_identity().verifying_key_bytes();
@@ -547,7 +554,7 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
-            .chain_safe_write(rand_hash);
+            .chain_safe_write(&rand_hash);
 
         if let Some(data) = app_data {
             packet_data.write(data)?;
@@ -561,7 +568,7 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
-            .chain_safe_write(rand_hash)
+            .chain_safe_write(&rand_hash)
             .chain_safe_write(&signature.to_bytes());
 
         if let Some(data) = app_data {
