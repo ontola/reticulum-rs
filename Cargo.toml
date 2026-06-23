@@ -89,7 +89,7 @@ futures = { version = "0.3.30", default-features = false, features = [
 xtensa-lx-rt = { version = "0.21", optional = true }
 
 [features]
-default = []
+default = ["alloc"]
 std = [
   "alloc",
   "dep:tokio",
