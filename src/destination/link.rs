@@ -378,8 +378,6 @@ impl Link {
         packet_data.safe_write(&signature.to_bytes()[..]);
         packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
 
-        
-
         Packet {
             header: Header {
                 packet_type: PacketType::Proof,

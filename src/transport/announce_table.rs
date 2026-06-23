@@ -186,7 +186,8 @@ impl AnnounceTable {
     ) -> Option<TxMessage> {
         // temporary hack
         self.map
-            .get_mut(dest_hash).and_then(|e| e.retransmit(transport_id))
+            .get_mut(dest_hash)
+            .and_then(|e| e.retransmit(transport_id))
     }
 
     #[allow(clippy::wrong_self_convention)]
